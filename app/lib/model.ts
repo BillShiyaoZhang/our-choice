@@ -34,6 +34,9 @@ export interface Source {
   platform: Platform;
   url: string;
   feedUrl?: string;
+  /** Original public page re-resolved through RSSHub Radar on every refresh. */
+  refreshUrl?: string;
+  provider?: "rsshub";
   initials: string;
   tone: VisualTone;
   enabled: boolean;

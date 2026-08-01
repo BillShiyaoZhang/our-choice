@@ -51,6 +51,38 @@ test("integrates docs with development, builds, and product navigation", async (
   assert.match(app, />文档</);
 });
 
+test("Dev Container starts the workspace and RSSHub as isolated Compose services", async () => {
+  const [devContainerText, compose] = await Promise.all([
+    text(".devcontainer/devcontainer.json"),
+    text(".devcontainer/compose.yaml"),
+  ]);
+  const devContainer = JSON.parse(devContainerText);
+
+  assert.equal(devContainer.dockerComposeFile, "compose.yaml");
+  assert.equal(devContainer.service, "workspace");
+  assert.equal(devContainer.workspaceFolder, "/workspaces/our-choice");
+  assert.equal(devContainer.shutdownAction, "stopCompose");
+  assert.deepEqual(devContainer.forwardPorts, [3000]);
+  assert.equal(
+    devContainer.postCreateCommand,
+    "npm ci --ignore-scripts --no-audit --no-fund",
+  );
+  assert.equal(devContainer.remoteUser, "node");
+  assert.equal("image" in devContainer, false);
+
+  assert.match(compose, /^services:\s*\n\s{2}workspace:/m);
+  assert.match(compose, /mcr\.microsoft\.com\/devcontainers\/javascript-node:1-22-bookworm/);
+  assert.match(compose, /\.\.:\/workspaces\/our-choice:cached/);
+  assert.match(compose, /command:\s*sleep infinity/);
+  assert.match(compose, /RSSHUB_BASE_URL:\s*http:\/\/rsshub:1200/);
+  assert.match(compose, /RSSHUB_ACCESS_KEY:\s*\$\{RSSHUB_ACCESS_KEY:-\}/);
+  assert.match(compose, /depends_on:\s*\n\s{6}rsshub:/m);
+  assert.match(compose, /^\s{2}rsshub:\s*$/m);
+  assert.match(compose, /ghcr\.io\/diygod\/rsshub:chromium-bundled/);
+  assert.match(compose, /ACCESS_KEY:\s*\$\{RSSHUB_ACCESS_KEY:-\}/);
+  assert.doesNotMatch(compose, /^\s+ports:/m);
+});
+
 test("deploys docs through a least-privilege GitHub Pages workflow", async () => {
   const workflow = await text(".github/workflows/docs-pages.yml");
 

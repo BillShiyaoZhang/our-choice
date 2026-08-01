@@ -91,6 +91,11 @@ interface PreviewSuccess {
     title: string;
     description?: string;
     feedUrl?: string;
+    refreshUrl?: string;
+    provider?: "rsshub";
+    rsshubRoute?: string;
+    routeTitle?: string;
+    docsUrl?: string;
     siteUrl?: string;
     profileUrl?: string;
     mid?: string;
@@ -737,7 +742,7 @@ export function OurChoiceApp() {
     const candidates = activeSources.filter(
       (source) =>
         source.enabled &&
-        Boolean(source.feedUrl) &&
+        Boolean(source.feedUrl || source.refreshUrl) &&
         (!sourceIds || sourceIds.includes(source.id)),
     );
 
@@ -761,7 +766,9 @@ export function OurChoiceApp() {
           const source = candidates[nextIndex];
           nextIndex += 1;
           try {
-            const preview = await fetchPreview(source.feedUrl ?? source.url);
+            const preview = await fetchPreview(
+              source.refreshUrl ?? source.feedUrl ?? source.url,
+            );
             results.push({ source, preview });
           } catch (error) {
             results.push({
@@ -1257,13 +1264,16 @@ export function OurChoiceApp() {
               description:
                 preview.source.description ||
                 (preview.mode === "live" ? "通过 RSS 获取的新内容" : "平台链接订阅"),
-              platform: preview.mode === "live" ? "rss" : preview.source.kind,
+              platform: preview.source.kind,
               url:
                 preview.source.siteUrl ||
                 preview.source.profileUrl ||
+                preview.source.refreshUrl ||
                 preview.source.feedUrl ||
                 "#",
               feedUrl: preview.source.feedUrl,
+              refreshUrl: preview.source.refreshUrl,
+              provider: preview.source.provider,
               initials: (name.trim() || preview.source.title).slice(0, 1),
               tone,
               enabled: true,
@@ -1885,7 +1895,7 @@ function SubscriptionsView({
   onOpenSource: (source: Source) => void;
 }) {
   const liveCount = sources.filter((source) => source.enabled).length;
-  const rssCount = sources.filter((source) => source.feedUrl).length;
+  const rssCount = sources.filter((source) => source.feedUrl || source.refreshUrl).length;
 
   return (
     <>
@@ -1957,8 +1967,10 @@ function SubscriptionsView({
                     {platformLabels[source.platform]}
                   </span>
                   {source.enabled ? (
-                    source.feedUrl ? (
-                      <span className="status-text success"><span /> 自动同步</span>
+                    source.feedUrl || source.refreshUrl ? (
+                      <span className="status-text success"><span />
+                        {source.provider === "rsshub" ? " RSSHub 同步" : " 自动同步"}
+                      </span>
                     ) : (
                       <span className="status-text link"><span /> 链接模式</span>
                     )
@@ -1978,7 +1990,7 @@ function SubscriptionsView({
                   >
                     <PanelTopOpen size={17} />
                   </button>
-                  {source.feedUrl && (
+                  {(source.feedUrl || source.refreshUrl) && (
                     <button type="button" aria-label={`更新 ${source.name}`} onClick={() => onRefreshSource(source.id)}>
                       <RefreshCw size={17} />
                     </button>
@@ -1999,7 +2011,7 @@ function SubscriptionsView({
           </section>
 
           <p className="list-footnote">
-            <LockKeyhole size={14} /> RSS 由本地站点按需读取；中文内容平台在主显示区以链接模式打开。
+            <LockKeyhole size={14} /> RSS 与已配置的 RSSHub 由本地站点按需读取；无法转换的平台仍以链接模式打开。
           </p>
         </>
       ) : (
@@ -2417,7 +2429,10 @@ function AddSubscriptionModal({
       return;
     }
     const duplicate = existingSources.find(
-      (source) => source.url === trimmed || source.feedUrl === trimmed,
+      (source) =>
+        source.url === trimmed ||
+        source.feedUrl === trimmed ||
+        source.refreshUrl === trimmed,
     );
     if (duplicate) {
       setError(`你已经订阅「${duplicate.name}」了。`);
@@ -2503,7 +2518,9 @@ function AddSubscriptionModal({
             <div className="preview-success-line">
               <span><Check size={15} /></span>
               {preview.mode === "live"
-                ? "已识别可同步的订阅源"
+                ? preview.source.provider === "rsshub"
+                  ? "已通过 RSSHub 识别可同步来源"
+                  : "已识别可同步的订阅源"
                 : `已识别${preview.source.platformLabel ?? "平台"}链接`}
             </div>
             <div className="preview-source-row">
@@ -2521,6 +2538,17 @@ function AddSubscriptionModal({
               <div className="link-mode-note">
                 <Link2 size={16} />
                 <p>{preview.warning.message}</p>
+              </div>
+            )}
+
+            {preview.source.provider === "rsshub" && (
+              <div className="link-mode-note">
+                <Rss size={16} />
+                <p>
+                  使用 RSSHub Radar 路由
+                  {preview.source.routeTitle ? `「${preview.source.routeTitle}」` : ""}
+                  ；实例地址与访问密钥不会保存到浏览器。
+                </p>
               </div>
             )}
 

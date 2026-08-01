@@ -163,6 +163,269 @@ test("mainstream Chinese content platforms use explicit link-only previews", asy
   }
 });
 
+test("configured RSSHub resolves Radar rules without exposing its instance or access key", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const previousAccessKey = process.env.RSSHUB_ACCESS_KEY;
+  const originalFetch = globalThis.fetch;
+  const requestedUrls = [];
+  const sourceUrl = "https://space.bilibili.com/946974";
+  const accessKey = "server-only-secret";
+
+  process.env.RSSHUB_BASE_URL = "http://rsshub.internal:1200";
+  process.env.RSSHUB_ACCESS_KEY = accessKey;
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    requestedUrls.push(url);
+
+    if (url.startsWith("http://rsshub.internal:1200/api/radar/rules/bilibili.com")) {
+      return Response.json({
+        _name: "哔哩哔哩",
+        space: [
+          {
+            title: "UP 主投稿",
+            docs: "https://docs.rsshub.app/routes/social-media",
+            source: ["/:mid"],
+            target: "/bilibili/user/video/:mid",
+          },
+        ],
+      });
+    }
+
+    if (url.startsWith("http://rsshub.internal:1200/bilibili/user/video/946974")) {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>影视飓风</title><link>${sourceUrl}</link><description>来自 B 站的更新</description><item><guid>BV1test</guid><title>一条新视频</title><link>https://www.bilibili.com/video/BV1test</link><pubDate>Sat, 01 Aug 2026 01:00:00 GMT</pubDate><description>视频简介</description></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      }),
+      env(),
+      context,
+    );
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.ok, true);
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.source.kind, "bilibili");
+    assert.equal(payload.source.provider, "rsshub");
+    assert.equal(payload.source.refreshUrl, sourceUrl);
+    assert.equal(payload.source.rsshubRoute, "/bilibili/user/video/946974");
+    assert.equal(payload.source.feedUrl, undefined);
+    assert.equal(payload.items[0].title, "一条新视频");
+    assert.equal(requestedUrls.length, 2);
+    assert.ok(requestedUrls.every((url) => new URL(url).searchParams.get("key") === accessKey));
+    assert.doesNotMatch(JSON.stringify(payload), /rsshub\.internal|server-only-secret/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+    if (previousAccessKey === undefined) delete process.env.RSSHUB_ACCESS_KEY;
+    else process.env.RSSHUB_ACCESS_KEY = previousAccessKey;
+  }
+});
+
+test("RSSHub discovery failures preserve the platform link-only fallback", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async () => new Response("Unavailable", { status: 503 });
+
+  try {
+    const app = await worker();
+    const sourceUrl = "https://www.zhihu.com/people/example";
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      }),
+      env(),
+      context,
+    );
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.ok, true);
+    assert.equal(payload.mode, "link-only");
+    assert.equal(payload.source.kind, "zhihu");
+    assert.equal(payload.source.profileUrl, sourceUrl);
+    assert.equal(payload.warning.code, "RSSHUB_FALLBACK");
+    assert.match(payload.warning.message, /RSSHub/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
+test("RSSHub Radar extends discovery to websites outside the built-in platform list", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  const sourceUrl = "https://blog.example.com/author/alice";
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === sourceUrl) {
+      return new Response("<!doctype html><title>Alice</title>", {
+        headers: { "content-type": "text/html" },
+      });
+    }
+    if (url === "https://rsshub.example/api/radar/rules/example.com") {
+      return Response.json({
+        _name: "Example",
+        blog: [
+          {
+            title: "作者文章",
+            source: ["/author/:name"],
+            target: "/example/author/:name",
+          },
+        ],
+      });
+    }
+    if (url === "https://rsshub.example/example/author/alice") {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>Alice 的文章</title><link>${sourceUrl}</link><item><title>第一篇</title><link>https://blog.example.com/posts/one</link><guid>one</guid></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      }),
+      env(),
+      context,
+    );
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.source.kind, "rss");
+    assert.equal(payload.source.provider, "rsshub");
+    assert.equal(payload.source.refreshUrl, sourceUrl);
+    assert.equal(payload.source.rsshubRoute, "/example/author/alice");
+    assert.equal(payload.items[0].url, "https://blog.example.com/posts/one");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
+test("RSSHub Radar uses the registrable domain for multi-level public suffixes", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  const sourceUrl = "https://news.example.co.uk/writers/bob";
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === sourceUrl) {
+      return new Response("<!doctype html><title>Bob</title>", {
+        headers: { "content-type": "text/html" },
+      });
+    }
+    if (url === "https://rsshub.example/api/radar/rules/example.co.uk") {
+      return Response.json({
+        _name: "Example UK",
+        news: [
+          {
+            title: "作者文章",
+            source: ["/writers/:name"],
+            target: "/example-uk/writers/:name",
+          },
+        ],
+      });
+    }
+    if (url === "https://rsshub.example/example-uk/writers/bob") {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>Bob</title><link>${sourceUrl}</link><item><title>UK post</title><link>https://news.example.co.uk/posts/one</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      }),
+      env(),
+      context,
+    );
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.source.rsshubRoute, "/example-uk/writers/bob");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
+test("RSSHub Radar routes cannot escape the configured instance", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  const requestedUrls = [];
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    requestedUrls.push(url);
+    return Response.json({
+      _name: "哔哩哔哩",
+      space: [
+        {
+          title: "不安全路由",
+          source: ["/:mid"],
+          target: "//attacker.example/:mid",
+        },
+      ],
+    });
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://space.bilibili.com/946974" }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(payload.mode, "link-only");
+    assert.equal(payload.warning.code, "RSSHUB_NO_ROUTE");
+    assert.equal(requestedUrls.length, 1);
+    assert.equal(new URL(requestedUrls[0]).hostname, "rsshub.example");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
 test("the project has no OpenAI Sites deployment configuration", async () => {
   const viteConfig = await readFile(new URL("vite.config.ts", templateRoot), "utf8");
   await assert.rejects(

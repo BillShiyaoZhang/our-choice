@@ -52,6 +52,19 @@
 - RSS、Atom、公开播客 Feed 和网页 Feed 自动发现仍使用 `live` 模式，不因平台链接适配而降级。
 - 不调用或模拟平台非公开接口，不绕过登录、反爬、Cookie、CSP 或 `X-Frame-Options`；短链只按原始公开链接保存，不由服务端跟随到私有目标。
 
+## RSSHub 与 Radar 来源发现
+
+- 服务端可通过 `RSSHUB_BASE_URL` 连接由部署者选择的 RSSHub 实例；未配置时保持现有公开 Feed 与平台链接模式，不默认把用户地址发送给公共 RSSHub 实例。
+- 来源识别优先读取 RSSHub 的 `/api/radar/rules/{domain}` JSON 接口，使用与 RSSHub-Radar 同源的域名、子域名和路径模板发现候选路由。应用不加载或执行远程 JavaScript，也不把 RSSHub 或 RSSHub-Radar 的 AGPL 源码嵌入前端包。
+- 仅接受规则返回的同实例绝对路径；路径模板参数只能来自用户已提交 URL 的路径、查询或片段。无法安全解析的模板视为不匹配，不执行表达式或动态代码。
+- `RSSHUB_ACCESS_KEY` 只由服务端在请求 Radar API 与 Feed 时附加，不写入 API 响应、浏览器存储、日志文案或导出的 JSON。
+- RSSHub 成功返回可识别的 RSS/Atom 时，来源使用 `live` 模式并保留原平台标识、原始地址、RSSHub 提供方和安全的路由路径；后续刷新重新从原始地址解析规则，避免持久化内部实例地址或访问密钥。
+- RSSHub 未配置、没有匹配规则、规则需要当前安全匹配器不支持的动态页面信息，或实例暂时不可用时，十二个已知中文平台继续返回 `link-only`，旧内容与原有链接订阅能力不受影响。
+- 对普通网站仍优先使用其公开 RSS/Atom 或 HTML Feed 声明；直接读取失败后才尝试已配置的 RSSHub Radar 规则，从而扩展到现有十二个平台之外的来源。
+- Docker Compose 提供与应用分离的官方 RSSHub 容器，并通过内部网络连接；两者分别运行和遵守各自许可证。直接运行 `npm run dev` 时由开发者显式配置外部或本地 RSSHub 地址。
+- Dev Container 使用独立的 Compose 文件：`workspace` 服务提供 Node.js 22 开发环境与源码挂载，`rsshub` sidecar 自动随工作区启动；开发容器通过 `http://rsshub:1200` 访问它，不要求 Docker-in-Docker，也不向宿主机公开 RSSHub 端口。
+- Dev Container 自动安装锁定依赖并转发应用的 `3000` 端口。可选的宿主机 `RSSHUB_ACCESS_KEY` 同时传给工作区的 `RSSHUB_ACCESS_KEY` 和 sidecar 的 `ACCESS_KEY`；未设置时允许本地开发环境无密钥运行。
+
 ## 验收标准
 
 - `docs/index.html`、本地 CSS/JS、`.nojekyll` 均存在。
@@ -61,4 +74,6 @@
 - GitHub Pages 工作流使用当前官方 Actions，权限与发布目录正确。
 - 文档专项测试、现有测试、构建和 lint 全部通过。
 - 上述十二个平台均有确定性的接口测试，验证平台识别、链接模式、原始链接保留和警告信息。
+- RSSHub/Radar 测试使用本地模拟响应，验证域名规则发现、路径参数替换、实时 Feed 解析、密钥不泄露、无规则/上游失败降级，以及未配置时的兼容行为；测试不得依赖真实 RSSHub 或平台网络。
+- Dev Container 配置测试验证 Compose 文件、工作区服务、源码挂载、RSSHub sidecar、内部服务地址、密钥映射、`3000` 端口转发与依赖安装命令保持一致；Compose 配置必须可由 Docker 正常解析。
 - GitHub Pages URL 可公开访问并返回文档首页。

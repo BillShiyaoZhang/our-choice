@@ -74,7 +74,7 @@
           <dl class="signal-row">
             <div><dt>01</dt><dd><strong>主动订阅</strong><span>不把推荐混进收件箱</span></dd></div>
             <div><dt>02</dt><dd><strong>本地保存</strong><span>选择与记录留在浏览器</span></dd></div>
-            <div><dt>03</dt><dd><strong>开放来源</strong><span>RSS、Atom 与链接模式</span></dd></div>
+            <div><dt>03</dt><dd><strong>开放来源</strong><span>RSS、Atom、RSSHub 与链接模式</span></dd></div>
           </dl>
         </section>
 
@@ -97,6 +97,7 @@
               <ul class="check-list">
                 <li>RSS / Atom / 播客预览与订阅</li>
                 <li>网站公开 Feed 自动发现</li>
+                <li>可选的 RSSHub + Radar 路由发现</li>
                 <li>十二个主流中文内容平台的链接模式</li>
                 <li>频道与具体内容在站内主区域加载</li>
                 <li>订阅基线、查看记录与准确的新增判定</li>
@@ -112,7 +113,7 @@
               <ul class="dash-list">
                 <li>没有账号和跨设备云同步</li>
                 <li>不会绕过付费墙或来源访问限制</li>
-                <li>中文内容平台链接模式不自动拉取更新</li>
+                <li>未配置或无法匹配 RSSHub 时，平台链接不自动拉取更新</li>
                 <li>来源可通过安全响应头禁止被第三方页面内嵌</li>
                 <li>发现偏好仅在当前浏览器生效</li>
                 <li>清除站点数据前需要先导出备份</li>
@@ -139,7 +140,7 @@ npm run dev</code></pre>
           <div class="mini-grid">
             <article><span>生产模式</span><code>npm run build<br />npm run start</code></article>
             <article><span>Docker</span><code>docker compose up --build</code></article>
-            <article><span>Dev Container</span><p>在兼容编辑器中打开仓库，依赖会自动安装并转发 3000 端口。</p></article>
+            <article><span>Dev Container</span><p>在兼容编辑器中打开仓库，依赖会自动安装、RSSHub sidecar 会一起启动，并转发应用的 3000 端口。</p></article>
           </div>
         </section>
 
@@ -172,7 +173,7 @@ npm run dev</code></pre>
             <div>
               <h3>管理来源</h3>
               <p>在“订阅”中可打开频道、单独刷新、暂停或移除来源。批量刷新最多同时处理三路，失败不会清空旧内容。</p>
-              <p>Bilibili、微信公众号、知乎、小红书、抖音、快手、微博、小宇宙、今日头条、百家号、豆瓣和喜马拉雅以站内链接模式保存，不自动抓取动态；如有公开 RSS 转换地址，可按普通 RSS 添加。</p>
+              <p>Bilibili、微信公众号、知乎、小红书、抖音、快手、微博、小宇宙、今日头条、百家号、豆瓣和喜马拉雅默认以站内链接模式保存。部署者配置 RSSHub 后，自选会使用 Radar 规则把可安全匹配的公开页面转换为可刷新的订阅；无规则或转换失败时仍保留链接模式。</p>
             </div>
           </div>
           <div class="callout warning"><span aria-hidden="true">!</span><div><strong>无法识别网页？</strong><p>优先粘贴网站公开的 RSS/Atom 地址。普通网页只有声明了公开 Feed 时才能自动发现。</p></div></div>
@@ -210,7 +211,7 @@ npm run dev</code></pre>
         <section class="doc-section section-block" id="troubleshooting" data-doc-section data-keywords="问题 FAQ 错误 刷新 订阅 丢失 导入 网络">
           <div class="section-heading compact"><span class="section-number">07</span><div><h2>常见问题</h2></div></div>
           <details><summary>订阅刷新失败会丢掉之前的内容吗？</summary><p>不会。来源请求或解析失败时会保留已有内容，并给出可重试提示。</p></details>
-          <details><summary>为什么中文内容平台没有内容预览？</summary><p>当前版本避免依赖不稳定的匿名接口，因此只保存公开的主页或内容链接。公开的 RSS 转换地址仍可正常预览。</p></details>
+          <details><summary>为什么中文内容平台没有内容预览？</summary><p>自选不会调用平台非公开接口。未配置 RSSHub、Radar 没有适用规则或该路由需要额外凭据时，会安全降级为公开链接；网站自己的 Feed 和可用的 RSSHub 路由仍可正常预览。</p></details>
           <details><summary>为什么有些页面无法在主显示区打开？</summary><p>部分平台通过 X-Frame-Options 或 CSP 禁止任何第三方站点内嵌。此时可在当前页打开来源，使用浏览器返回后，查看记录仍会保留。</p></details>
           <details><summary>为什么我在内嵌的 B站页面登录后仍显示未登录？</summary><p>浏览器可能隔离或阻止了 iframe 的第三方 Cookie。自选已经为支持 Storage Access API 的来源开放所需权限，但该权限必须由 B站页面自己请求，父页面无法代为调用。请使用查看器中的“在当前页打开并登录 B站”进入第一方登录环境；浏览器返回后，本地阅读记录仍会保留。</p></details>
           <details><summary>自选会保存我的平台密码吗？</summary><p>不会。登录表单、Cookie 与会话都由来源平台和浏览器处理；自选只保存非敏感的平台地址与最近打开时间。</p></details>
@@ -265,10 +266,10 @@ npm run dev</code></pre>
             <div class="arch-node"><small>DEVICE</small><strong>localStorage</strong><span>our-choice:state:v1</span></div>
             <div class="arch-connector"><span>POST 预览</span><b>→</b></div>
             <div class="arch-node"><small>SERVER ROUTE</small><strong>来源预览</strong><span>校验、抓取、解析</span></div>
-            <div class="arch-connector"><span>公开 HTTP(S)</span><b>→</b></div>
-            <div class="arch-node"><small>UPSTREAM</small><strong>RSS / Atom</strong><span>最多 1 MB</span></div>
+            <div class="arch-connector"><span>公开 Feed / 内部配置</span><b>→</b></div>
+            <div class="arch-node"><small>UPSTREAM</small><strong>RSS / Atom / RSSHub</strong><span>最多 1 MB</span></div>
           </div>
-          <p>客户端拥有产品状态与来源基线；服务端路由只在预览和刷新时请求来源，不持久化用户订阅。外部频道和内容通过受限 iframe 在主区域加载，来源平台的会话仍由浏览器管理。响应设置 <code>Cache-Control: no-store</code>。</p>
+          <p>客户端拥有产品状态与来源基线；服务端路由只在预览和刷新时请求来源，不持久化用户订阅。配置 RSSHub 后，服务端通过 <code>/api/radar/rules/{domain}</code> 读取同源 Radar 规则并请求匹配的 Feed；实例地址和访问密钥不进入浏览器数据。外部频道和内容通过受限 iframe 在主区域加载，来源平台的会话仍由浏览器管理。响应设置 <code>Cache-Control: no-store</code>。</p>
         </section>
 
         <section class="doc-section section-block" id="preview-api" data-doc-section data-keywords="API source preview POST 请求 响应 错误 RSS Bilibili 安全">
@@ -282,7 +283,7 @@ npm run dev</code></pre>
 }</code></pre>
           </div>
           <h3>成功响应</h3>
-          <p><code>mode: "live"</code> 返回规范化的来源、条目与抓取时间；受支持的中文内容平台返回 <code>mode: "link-only"</code>、平台标识、原始链接、空条目列表和明确警告。Bilibili 继续返回兼容的 <code>BILIBILI_LINK_ONLY</code> 警告。</p>
+          <p><code>mode: "live"</code> 返回规范化的来源、条目与抓取时间。由 RSSHub 转换的来源还会返回 <code>provider: "rsshub"</code>、原始 <code>refreshUrl</code> 与不含实例地址或密钥的 <code>rsshubRoute</code>。未配置、无规则或转换失败的中文内容平台返回 <code>mode: "link-only"</code>、平台标识、原始链接、空条目列表和明确警告；Bilibili 保留兼容的 <code>BILIBILI_LINK_ONLY</code> 警告。</p>
           <h3>失败响应</h3>
           <table>
             <thead><tr><th>错误码</th><th>含义</th><th>可重试</th></tr></thead>
@@ -296,6 +297,8 @@ npm run dev</code></pre>
             </tbody>
           </table>
           <aside class="note security"><strong>网络安全边界</strong><p>仅接受公开 HTTP(S) 地址和 80/443 端口；拒绝凭据、localhost、私网 IPv4/IPv6 与本地域名；最多跟随 3 次重定向，并对每次目标重新校验。</p></aside>
+          <h3>RSSHub 配置</h3>
+          <p>Docker Compose 默认连接同编排中的独立 RSSHub 服务。直接运行应用时设置 <code>RSSHUB_BASE_URL</code>；实例启用访问控制时再设置仅服务端可见的 <code>RSSHUB_ACCESS_KEY</code>。自选不会默认使用公共实例，也不会执行远程 Radar JavaScript。</p>
         </section>
 
         <section class="doc-section section-block" id="testing" data-doc-section data-keywords="测试 lint TDD DDD 文档 驱动 红绿重构 验证">

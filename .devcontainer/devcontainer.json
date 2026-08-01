@@ -1,6 +1,9 @@
 {
   "name": "自选 Our Choice",
-  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "dockerComposeFile": "compose.yaml",
+  "service": "workspace",
+  "workspaceFolder": "/workspaces/our-choice",
+  "shutdownAction": "stopCompose",
   "forwardPorts": [3000],
   "portsAttributes": {
     "3000": {
