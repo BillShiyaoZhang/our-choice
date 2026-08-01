@@ -1427,6 +1427,7 @@ export function OurChoiceApp() {
 
 function EmbeddedViewer({ viewer, onBack }: { viewer: ViewerState; onBack: () => void }) {
   const [reloadKey, setReloadKey] = useState(0);
+  const isBilibili = viewer.platform === platformLabels.bilibili;
 
   return (
     <section className="embedded-viewer" aria-labelledby="embedded-viewer-title">
@@ -1447,16 +1448,23 @@ function EmbeddedViewer({ viewer, onBack }: { viewer: ViewerState; onBack: () =>
             )}
           </div>
           <h1 id="embedded-viewer-title">{viewer.title}</h1>
-          <p>
-            <ShieldCheck size={14} /> {viewer.platform} 页面在主显示区内加载；登录会话由浏览器按平台规则保留。
+          <p className={isBilibili ? "viewer-session-message" : undefined}>
+            <ShieldCheck size={14} />
+            {isBilibili
+              ? "内嵌登录受第三方 Cookie 限制；若仍显示未登录，请使用右侧的当前页登录入口。"
+              : `${viewer.platform} 页面在主显示区内加载；内嵌登录取决于浏览器和来源平台的 Cookie 策略。`}
           </p>
         </div>
         <div className="viewer-actions">
           <button className="quiet-button" type="button" onClick={() => setReloadKey((key) => key + 1)}>
             <RefreshCw size={16} /> 重新加载
           </button>
-          <a className="quiet-button" href={viewer.url}>
-            无法嵌入时在当前页打开 <ExternalLink size={15} />
+          <a
+            className={isBilibili ? "secondary-button viewer-login-fallback" : "quiet-button"}
+            href={viewer.url}
+          >
+            {isBilibili ? "在当前页打开并登录 B站" : "无法嵌入时在当前页打开"}
+            <ExternalLink size={15} />
           </a>
         </div>
       </header>
@@ -1469,8 +1477,8 @@ function EmbeddedViewer({ viewer, onBack }: { viewer: ViewerState; onBack: () =>
           key={`${viewer.url}-${reloadKey}`}
           src={viewer.url}
           title={`${viewer.title} — ${viewer.platform}`}
-          allow="autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-read; clipboard-write"
-          sandbox="allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"
+          allow="autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-read; clipboard-write; storage-access"
+          sandbox="allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-storage-access-by-user-activation"
           referrerPolicy="strict-origin-when-cross-origin"
         >
           你的浏览器不支持内嵌网页。
@@ -2820,11 +2828,11 @@ function SettingsModal({
           <div className="session-card-icon"><PanelTopOpen size={20} /></div>
           <div>
             <div className="settings-title-row">
-              <h3>平台登录会话</h3>
+              <h3>已打开的外部站点</h3>
               <span>{data.platformSessions.length} 个站点已在本站打开</span>
             </div>
             <p>
-              在内嵌页面登录后，浏览器会按各平台规则继续使用其会话。自选只记录平台地址和最近打开时间，不读取、保存或导出密码与 Cookie。
+              自选只记录站点地址和最近打开时间，不读取、保存或导出密码与 Cookie。登录状态能否在内嵌页面复用，由浏览器隐私设置和来源平台共同决定。
             </p>
           </div>
         </section>

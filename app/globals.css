@@ -678,16 +678,27 @@ a {
   color: var(--brand);
 }
 
+.viewer-heading .viewer-session-message {
+  color: #8a5117;
+  font-size: 10px;
+  font-weight: 620;
+}
+
 .viewer-actions {
   display: flex;
   align-items: center;
   gap: 7px;
 }
 
-.viewer-actions .quiet-button {
+.viewer-actions .quiet-button,
+.viewer-actions .secondary-button {
   min-height: 38px;
   padding: 7px 10px;
   font-size: 10px;
+}
+
+.viewer-login-fallback {
+  white-space: nowrap;
 }
 
 .viewer-frame-shell {
@@ -3856,7 +3867,8 @@ a {
     grid-template-columns: auto 1fr;
   }
 
-  .viewer-actions .quiet-button {
+  .viewer-actions .quiet-button,
+  .viewer-actions .secondary-button {
     justify-content: center;
     text-align: center;
   }

@@ -100,7 +100,7 @@
                 <li>Bilibili 创作者链接模式</li>
                 <li>频道与具体内容在站内主区域加载</li>
                 <li>订阅基线、查看记录与准确的新增判定</li>
-                <li>复用浏览器管理的平台登录会话</li>
+                <li>在浏览器与平台允许时复用外部登录会话</li>
                 <li>筛选、搜索、稍后看与安静阅读</li>
                 <li>本地合集与人工精选发现</li>
                 <li>JSON 导入导出、跨标签页同步</li>
@@ -202,7 +202,7 @@ npm run dev</code></pre>
             <li><strong>备份：</strong>设置 → 数据与隐私 → 导出，下载 JSON 文件。</li>
             <li><strong>恢复：</strong>在同一区域导入此前导出的 JSON；导入前请确认文件来源。</li>
             <li><strong>跨标签页：</strong>同一站点下的其他标签页会收到存储变化。</li>
-            <li><strong>平台会话：</strong>内嵌页面可沿用浏览器按平台规则保存的登录 Cookie；自选只记录平台地址和最近打开时间，不接触密码或 Cookie 内容。</li>
+            <li><strong>平台会话：</strong>内嵌页面只有在浏览器与平台允许第三方 Cookie 或 Storage Access 时才能沿用登录状态；自选只记录平台地址和最近打开时间，不接触密码或 Cookie 内容。</li>
             <li><strong>清理提醒：</strong>清除浏览器站点数据会删除本地内容，操作前请先导出。</li>
           </ul>
         </section>
@@ -212,6 +212,7 @@ npm run dev</code></pre>
           <details><summary>订阅刷新失败会丢掉之前的内容吗？</summary><p>不会。来源请求或解析失败时会保留已有内容，并给出可重试提示。</p></details>
           <details><summary>为什么 Bilibili 没有内容预览？</summary><p>当前版本避免依赖不稳定的匿名接口，因此只保存创作者或视频链接。公开的 RSS 转换地址仍可正常预览。</p></details>
           <details><summary>为什么有些页面无法在主显示区打开？</summary><p>部分平台通过 X-Frame-Options 或 CSP 禁止任何第三方站点内嵌。此时可在当前页打开来源，使用浏览器返回后，查看记录仍会保留。</p></details>
+          <details><summary>为什么我在内嵌的 B站页面登录后仍显示未登录？</summary><p>浏览器可能隔离或阻止了 iframe 的第三方 Cookie。自选已经为支持 Storage Access API 的来源开放所需权限，但该权限必须由 B站页面自己请求，父页面无法代为调用。请使用查看器中的“在当前页打开并登录 B站”进入第一方登录环境；浏览器返回后，本地阅读记录仍会保留。</p></details>
           <details><summary>自选会保存我的平台密码吗？</summary><p>不会。登录表单、Cookie 与会话都由来源平台和浏览器处理；自选只保存非敏感的平台地址与最近打开时间。</p></details>
           <details><summary>换一台设备后为什么没有数据？</summary><p>当前没有账号或云同步。请在原设备导出 JSON，再在新设备导入。</p></details>
           <details><summary>为什么本地网络地址不能订阅？</summary><p>来源预览接口会拒绝 localhost、私网 IP、非标准端口和危险重定向，防止服务端请求伪造（SSRF）。</p></details>

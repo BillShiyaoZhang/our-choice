@@ -73,6 +73,8 @@ test("keeps channels and content inside the app with a new-content baseline", as
   assert.match(app, /<iframe/);
   assert.match(app, /返回自选/);
   assert.match(app, /allow-forms/);
+  assert.match(app, /allow-storage-access-by-user-activation/);
+  assert.match(app, /在当前页打开并登录 B站/);
   assert.match(app, /source\.knownItemIds/);
   assert.match(app, /isNew:\s*false/);
   assert.match(app, /历史内容（不计入新增）/);
