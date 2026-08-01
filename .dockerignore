@@ -1,0 +1,13 @@
+.git
+.gitignore
+.DS_Store
+.next
+.vinext
+.wrangler
+dist
+node_modules
+npm-debug.log*
+coverage
+outputs
+work
+*.tsbuildinfo
