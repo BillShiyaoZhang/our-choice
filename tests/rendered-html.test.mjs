@@ -380,6 +380,178 @@ test("a selected RSSHub candidate is rediscovered and fetched", async () => {
   }
 });
 
+test("multiple selected RSSHub candidates merge into one source and deduplicate items", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  const sourceUrl = "https://space.bilibili.com/946974";
+  const requestedUrls = [];
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    requestedUrls.push(url);
+    if (url === "https://rsshub.example/api/radar/rules/bilibili.com") {
+      return Response.json({
+        space: [
+          { title: "UP 主图文", source: ["/:uid"], target: "/bilibili/user/article/:uid" },
+          { title: "UP 主投稿", source: ["/:uid"], target: "/bilibili/user/video/:uid" },
+        ],
+      });
+    }
+    if (url === "https://rsshub.example/bilibili/user/article/946974") {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>图文</title><link>${sourceUrl}</link><item><guid>shared-from-article</guid><title>共同内容</title><link>https://www.bilibili.com/opus/shared</link></item><item><title>图文一</title><link>https://www.bilibili.com/opus/article-one</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    if (url === "https://rsshub.example/bilibili/user/video/946974") {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>投稿</title><link>${sourceUrl}</link><item><guid>shared-from-video</guid><title>共同内容</title><link>https://www.bilibili.com/opus/shared</link></item><item><title>视频一</title><link>https://www.bilibili.com/video/BV1one</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: sourceUrl,
+          selections: [
+            "radar:/bilibili/user/article/946974",
+            "radar:/bilibili/user/video/946974",
+            "radar:/bilibili/user/article/946974",
+          ],
+        }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.source.refreshUrl, sourceUrl);
+    assert.deepEqual(
+      payload.source.rsshubSelections.map(({ id, title }) => ({ id, title })),
+      [
+        { id: "radar:/bilibili/user/article/946974", title: "UP 主图文" },
+        { id: "radar:/bilibili/user/video/946974", title: "UP 主投稿" },
+      ],
+    );
+    assert.deepEqual(
+      payload.items.map((item) => item.url),
+      [
+        "https://www.bilibili.com/opus/shared",
+        "https://www.bilibili.com/opus/article-one",
+        "https://www.bilibili.com/video/BV1one",
+      ],
+    );
+    assert.equal(
+      requestedUrls.filter((url) => url.endsWith("/api/radar/rules/bilibili.com")).length,
+      1,
+    );
+    assert.equal(requestedUrls.length, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
+test("multi-scope RSSHub previews keep all selections when one route fails", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  const sourceUrl = "https://space.bilibili.com/946974";
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === "https://rsshub.example/api/radar/rules/bilibili.com") {
+      return Response.json({
+        space: [
+          { title: "UP 主图文", source: ["/:uid"], target: "/bilibili/user/article/:uid" },
+          { title: "UP 主投稿", source: ["/:uid"], target: "/bilibili/user/video/:uid" },
+        ],
+      });
+    }
+    if (url.endsWith("/bilibili/user/article/946974")) {
+      return new Response("temporarily unavailable", { status: 503 });
+    }
+    if (url.endsWith("/bilibili/user/video/946974")) {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>投稿</title><link>${sourceUrl}</link><item><title>视频一</title><link>https://www.bilibili.com/video/BV1one</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: sourceUrl,
+          selections: [
+            "radar:/bilibili/user/article/946974",
+            "radar:/bilibili/user/video/946974",
+          ],
+        }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.warning.code, "RSSHUB_PARTIAL");
+    assert.equal(payload.source.rsshubSelections.length, 2);
+    assert.equal(payload.items.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
+test("RSSHub multi-selection rejects more than twenty candidate ids before fetching", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    throw new Error("selection validation should happen before fetch");
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: "https://space.bilibili.com/946974",
+          selections: Array.from({ length: 21 }, (_, index) => `radar:/route/${index}`),
+        }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 400);
+    assert.equal(payload.error.code, "INVALID_SELECTION");
+    assert.equal(fetchCount, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
 test("specific Radar patterns outrank generic placeholder patterns", async () => {
   const previousBaseUrl = process.env.RSSHUB_BASE_URL;
   const originalFetch = globalThis.fetch;

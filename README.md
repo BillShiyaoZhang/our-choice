@@ -27,7 +27,7 @@ npm install
 npm run dev
 ```
 
-打开 [http://localhost:3000](http://localhost:3000)。
+打开 [http://localhost:3000](http://localhost:3000)。添加订阅时直接使用统一的“链接或 RSS”输入；同一链接发现多个 RSSHub 范围时可多选，并作为一个来源统一刷新和管理。点击来源可按视频、文章、播客查看其全部内容；来源的名称、说明、内容范围与 Bilibili 视频打开方式可在“订阅 → 设置”中修改。
 
 如需把没有公开 Feed 的平台页面转换为订阅，请连接一个由你选择的 RSSHub 实例：
 

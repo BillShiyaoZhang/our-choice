@@ -59,6 +59,7 @@ import {
   type Platform,
   type PlatformSession,
   type RssHubManualSubscription,
+  type RssHubSelection,
   type Source,
   type SuggestedCollection,
   type View,
@@ -96,6 +97,7 @@ interface PreviewSuccess {
     provider?: "rsshub";
     rsshubRoute?: string;
     rsshubSelection?: string;
+    rsshubSelections?: RssHubSelection[];
     manualSubscription?: RssHubManualSubscription;
     routeTitle?: string;
     docsUrl?: string;
@@ -156,25 +158,30 @@ const navItems: Array<{
   { id: "subscriptions", label: "订阅", icon: Rss },
 ];
 
-const subscriptionEntries: Array<{
-  id: "auto" | Platform;
+const supportedPlatforms: Array<{ id: Exclude<Platform, "rss" | "podcast" | "web">; label: string }> = [
+  { id: "bilibili", label: "B站" },
+  { id: "wechat", label: "微信公众号" },
+  { id: "zhihu", label: "知乎" },
+  { id: "xiaohongshu", label: "小红书" },
+  { id: "douyin", label: "抖音" },
+  { id: "kuaishou", label: "快手" },
+  { id: "weibo", label: "微博" },
+  { id: "xiaoyuzhou", label: "小宇宙" },
+  { id: "toutiao", label: "今日头条" },
+  { id: "baijiahao", label: "百家号" },
+  { id: "douban", label: "豆瓣" },
+  { id: "ximalaya", label: "喜马拉雅" },
+];
+
+const sourceContentSections: Array<{
+  type: ContentType;
   label: string;
-  hint: string;
-  placeholder: string;
+  description: string;
+  icon: LucideIcon;
 }> = [
-  { id: "auto", label: "链接或 RSS", hint: "自动识别 RSS、网站 Feed 或平台链接", placeholder: "粘贴 URL 或包含一个 URL 的分享文案" },
-  { id: "bilibili", label: "B站", hint: "使用 UP 主主页，可选择投稿、动态、图文等", placeholder: "https://space.bilibili.com/946974" },
-  { id: "wechat", label: "微信公众号", hint: "文章链接或公众号 ID / Biz 专用入口", placeholder: "https://mp.weixin.qq.com/s/..." },
-  { id: "zhihu", label: "知乎", hint: "用户、回答、问题、话题或专栏页面", placeholder: "https://www.zhihu.com/people/..." },
-  { id: "xiaohongshu", label: "小红书", hint: "使用公开用户主页；抓取可能需要 Cookie", placeholder: "https://www.xiaohongshu.com/user/profile/..." },
-  { id: "douyin", label: "抖音", hint: "使用博主主页；支持解析官方短链", placeholder: "https://www.douyin.com/user/..." },
-  { id: "kuaishou", label: "快手", hint: "使用公开 Profile 页面", placeholder: "https://www.kuaishou.com/profile/..." },
-  { id: "weibo", label: "微博", hint: "使用 /u/{uid} 博主主页", placeholder: "https://weibo.com/u/1195230310" },
-  { id: "xiaoyuzhou", label: "小宇宙", hint: "播客主页或任一单集都可订阅所属播客", placeholder: "https://www.xiaoyuzhoufm.com/podcast/..." },
-  { id: "toutiao", label: "今日头条", hint: "使用包含用户 token 的主页", placeholder: "https://www.toutiao.com/c/user/token/..." },
-  { id: "baijiahao", label: "百家号", hint: "当前无 RSSHub 路由时仍可保存链接", placeholder: "https://baijiahao.baidu.com/s?id=..." },
-  { id: "douban", label: "豆瓣", hint: "小组与榜单可转换，单个条目保存为链接", placeholder: "https://www.douban.com/group/648102" },
-  { id: "ximalaya", label: "喜马拉雅", hint: "使用专辑页；付费内容需要部署 Token", placeholder: "https://www.ximalaya.com/album/299146" },
+  { type: "video", label: "视频", description: "投稿、节目与影像更新", icon: Play },
+  { type: "article", label: "文章", description: "图文、动态与文字更新", icon: FileText },
+  { type: "podcast", label: "播客", description: "单集与音频节目", icon: Headphones },
 ];
 
 function cloneDefaultData(): AppData {
@@ -220,12 +227,30 @@ function dateGroup(value: string): ContentItem["dateGroup"] {
   return "更早";
 }
 
+function comparePublishedAtDescending(left: ContentItem, right: ContentItem) {
+  const leftTime = new Date(left.publishedAt).getTime();
+  const rightTime = new Date(right.publishedAt).getTime();
+  const leftValid = Number.isFinite(leftTime);
+  const rightValid = Number.isFinite(rightTime);
+  if (leftValid && rightValid && leftTime !== rightTime) return rightTime - leftTime;
+  if (leftValid !== rightValid) return leftValid ? -1 : 1;
+  return left.id.localeCompare(right.id);
+}
+
 function sourceForItem(data: AppData, item: ContentItem) {
   return data.sources.find((source) => source.id === item.sourceId);
 }
 
 function itemIsNew(item: ContentItem) {
   return !item.read && item.isNew !== false;
+}
+
+function opensBilibiliVideoExternally(source: Source | undefined, item: ContentItem) {
+  return (
+    source?.platform === "bilibili" &&
+    item.type === "video" &&
+    source.bilibiliOpenMode === "external"
+  );
 }
 
 function safeExternalUrl(value: string) {
@@ -260,8 +285,19 @@ function normalizeAppData(value: unknown): AppData | null {
     discoveredAt: item.discoveredAt ?? item.publishedAt ?? now,
     viewedAt: item.viewedAt ?? (item.read ? item.publishedAt ?? now : undefined),
   }));
-  const sources = (candidate.sources as Source[]).map((source) => ({
+  const sources = (candidate.sources as Source[]).map<Source>((source) => ({
     ...source,
+    bilibiliOpenMode:
+      source.platform === "bilibili"
+        ? source.bilibiliOpenMode === "external"
+          ? "external"
+          : "embedded"
+        : undefined,
+    rsshubSelections:
+      source.rsshubSelections ??
+      (source.rsshubSelection
+        ? [{ id: source.rsshubSelection, title: "已保存的内容范围" }]
+        : undefined),
     addedAt: source.addedAt ?? now,
     baselineAt: source.baselineAt ?? now,
     knownItemIds:
@@ -297,6 +333,8 @@ export function OurChoiceApp() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [sourceDetailId, setSourceDetailId] = useState<string | null>(null);
+  const [sourceSettingsId, setSourceSettingsId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [saveItemId, setSaveItemId] = useState<string | null>(null);
@@ -392,6 +430,10 @@ export function OurChoiceApp() {
     () => data.sources.filter((source) => !source.archived),
     [data.sources],
   );
+  const sourceSettingsSource = activeSources.find(
+    (source) => source.id === sourceSettingsId,
+  );
+  const sourceDetailSource = activeSources.find((source) => source.id === sourceDetailId);
 
   const inboxItems = useMemo(() => {
     const activeIds = new Set(
@@ -424,6 +466,7 @@ export function OurChoiceApp() {
 
   function goTo(next: View) {
     setViewer(null);
+    setSourceDetailId(null);
     setView(next);
     setMobileMenuOpen(false);
     setQuery("");
@@ -480,6 +523,14 @@ export function OurChoiceApp() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function openSourceDetails(source: Source) {
+    setViewer(null);
+    setQuery("");
+    setSourceDetailId(source.id);
+    setView("subscriptions");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function openContent(item: ContentItem) {
     const source = sourceForItem(data, item);
     const url = safeExternalUrl(item.url);
@@ -490,6 +541,12 @@ export function OurChoiceApp() {
     setItemRead(item.id, true);
     rememberPlatformSession(source, url);
     setQuery("");
+    if (opensBilibiliVideoExternally(source, item)) {
+      window.open(url, "_blank", "noopener,noreferrer");
+      setOpenCollectionId(null);
+      setFocusOpen(false);
+      return;
+    }
     setViewer({
       kind: "content",
       url,
@@ -711,6 +768,7 @@ export function OurChoiceApp() {
       confirmLabel: "移除订阅",
       danger: true,
       onConfirm: () => {
+        if (sourceDetailId === source.id) setSourceDetailId(null);
         setData((current) => ({
           ...current,
           sources: current.sources.map((candidate) =>
@@ -759,13 +817,13 @@ export function OurChoiceApp() {
   async function fetchPreview(
     url: string,
     limit = 12,
-    selection?: string,
+    selections?: string[],
     manual?: RssHubManualSubscription,
   ) {
     const response = await fetch("/api/source-preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: url || undefined, limit, selection, manual }),
+      body: JSON.stringify({ url: url || undefined, limit, selections, manual }),
     });
     const result = (await response.json()) as PreviewResponse;
     if (!result.ok) throw new Error(result.error.message);
@@ -804,7 +862,8 @@ export function OurChoiceApp() {
             const preview = await fetchPreview(
               source.refreshUrl ?? source.feedUrl ?? source.url,
               12,
-              source.rsshubSelection,
+              source.rsshubSelections?.map((selection) => selection.id) ??
+                (source.rsshubSelection ? [source.rsshubSelection] : undefined),
               source.manualSubscription,
             );
             results.push({ source, preview });
@@ -1138,7 +1197,15 @@ export function OurChoiceApp() {
             </button>
             <div>
               <span className="topbar-kicker">你的内容空间</span>
-              <strong>{viewer ? "站内查看" : query ? "搜索" : currentNav.label}</strong>
+              <strong>
+                {viewer
+                  ? "站内查看"
+                  : query
+                    ? "搜索"
+                    : sourceDetailSource
+                      ? "来源详情"
+                      : currentNav.label}
+              </strong>
             </div>
           </div>
 
@@ -1222,17 +1289,39 @@ export function OurChoiceApp() {
               onRemoveDemo={removeDemoData}
             />
           ) : view === "subscriptions" ? (
-            <SubscriptionsView
-              sources={activeSources}
-              totalUnread={unreadCount}
-              syncing={syncing}
-              onAdd={() => setAddOpen(true)}
-              onRefresh={() => void refreshSources()}
-              onRefreshSource={(id) => void refreshSources([id])}
-              onToggleSource={toggleSource}
-              onRemoveSource={requestRemoveSource}
-              onOpenSource={openSource}
-            />
+            sourceDetailSource ? (
+              <SourceDetailView
+                source={sourceDetailSource}
+                items={data.items.filter((item) => item.sourceId === sourceDetailSource.id)}
+                syncing={syncing}
+                laterCollectionId={laterCollection?.id}
+                onBack={() => {
+                  setSourceDetailId(null);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                onOpenSource={openSource}
+                onRefreshSource={(id) => void refreshSources([id])}
+                onSettings={(source) => setSourceSettingsId(source.id)}
+                onMarkRead={markReadWithUndo}
+                onOpen={openContent}
+                onToggleLater={toggleLater}
+                onSave={openSaveDialog}
+              />
+            ) : (
+              <SubscriptionsView
+                sources={activeSources}
+                totalUnread={unreadCount}
+                syncing={syncing}
+                onAdd={() => setAddOpen(true)}
+                onRefresh={() => void refreshSources()}
+                onRefreshSource={(id) => void refreshSources([id])}
+                onToggleSource={toggleSource}
+                onRemoveSource={requestRemoveSource}
+                onOpenDetails={openSourceDetails}
+                onOpenSource={openSource}
+                onSettings={(source) => setSourceSettingsId(source.id)}
+              />
+            )
           ) : view === "collections" ? (
             <CollectionsView
               collections={data.collections}
@@ -1318,6 +1407,9 @@ export function OurChoiceApp() {
               refreshUrl: preview.source.refreshUrl,
               provider: preview.source.provider,
               rsshubSelection: preview.source.rsshubSelection,
+              rsshubSelections: preview.source.rsshubSelections,
+              bilibiliOpenMode:
+                preview.source.kind === "bilibili" ? "embedded" : undefined,
               manualSubscription: preview.source.manualSubscription,
               initials: (name.trim() || preview.source.title).slice(0, 1),
               tone,
@@ -1352,6 +1444,53 @@ export function OurChoiceApp() {
                   ? `已订阅「${source.name}」，保留 ${items.length} 条历史内容（不计入新增）`
                   : `已保存「${source.name}」，可在站内打开`,
             });
+          }}
+        />
+      )}
+
+      {sourceSettingsSource && (
+        <SourceSettingsModal
+          source={sourceSettingsSource}
+          onClose={() => setSourceSettingsId(null)}
+          onFetchPreview={fetchPreview}
+          onSave={(changes, preview) => {
+            setData((current) => {
+              const savedAt = preview?.fetchedAt ?? new Date().toISOString();
+              return {
+                ...current,
+                sources: current.sources.map((source) => {
+                  if (source.id !== sourceSettingsSource.id) return source;
+                  const updated: Source = {
+                    ...source,
+                    name: changes.name,
+                    description: changes.description,
+                    bilibiliOpenMode: changes.bilibiliOpenMode,
+                    initials: changes.name.slice(0, 1) || source.initials,
+                    rsshubSelection:
+                      changes.rsshubSelections.length === 1
+                        ? changes.rsshubSelections[0]!.id
+                        : undefined,
+                    rsshubSelections:
+                      changes.rsshubSelections.length > 0
+                        ? changes.rsshubSelections
+                        : undefined,
+                    lastSyncLabel: preview?.mode === "live" ? "刚刚" : source.lastSyncLabel,
+                  };
+                  if (preview?.mode === "live") {
+                    const observed = normalizePreviewItems(updated, preview.items, {
+                      isNew: false,
+                      discoveredAt: savedAt,
+                    }).map((item) => item.id);
+                    updated.knownItemIds = Array.from(
+                      new Set([...observed, ...(source.knownItemIds ?? [])]),
+                    ).slice(0, 500);
+                  }
+                  return updated;
+                }),
+              };
+            });
+            setSourceSettingsId(null);
+            showToast({ message: `已更新「${changes.name}」的来源设置` });
           }}
         />
       )}
@@ -1836,6 +1975,9 @@ function ContentCard({
 }) {
   const [imageFailed, setImageFailed] = useState(false);
   const TypeIcon = item.type === "video" ? Play : item.type === "podcast" ? Headphones : FileText;
+  const opensExternally = opensBilibiliVideoExternally(source, item);
+  const openLabel = opensExternally ? "打开 Bilibili" : "站内查看";
+  const OpenIcon = opensExternally ? ExternalLink : PanelTopOpen;
 
   return (
     <article className={`content-card ${item.read ? "is-read" : ""}`}>
@@ -1843,7 +1985,7 @@ function ContentCard({
         type="button"
         className={`content-visual tone-${item.tone}`}
         onClick={onOpen}
-        aria-label={`${item.title}，在本站查看`}
+        aria-label={`${item.title}，${openLabel}`}
       >
         {item.thumbnailUrl && !imageFailed && (
           <img
@@ -1891,7 +2033,7 @@ function ContentCard({
             className="open-link"
             onClick={onOpen}
           >
-            站内查看 <PanelTopOpen size={14} />
+            {openLabel} <OpenIcon size={14} />
           </button>
           <div>
             {!item.read && (
@@ -1918,6 +2060,143 @@ function ContentCard({
   );
 }
 
+function SourceDetailView({
+  source,
+  items,
+  syncing,
+  laterCollectionId,
+  onBack,
+  onOpenSource,
+  onRefreshSource,
+  onSettings,
+  onMarkRead,
+  onOpen,
+  onToggleLater,
+  onSave,
+}: {
+  source: Source;
+  items: ContentItem[];
+  syncing: boolean;
+  laterCollectionId?: string;
+  onBack: () => void;
+  onOpenSource: (source: Source) => void;
+  onRefreshSource: (id: string) => void;
+  onSettings: (source: Source) => void;
+  onMarkRead: (id: string) => void;
+  onOpen: (item: ContentItem) => void;
+  onToggleLater: (id: string) => void;
+  onSave: (id: string) => void;
+}) {
+  const sections = sourceContentSections
+    .map((section) => ({
+      ...section,
+      items: items
+        .filter((item) => item.type === section.type)
+        .slice()
+        .sort(comparePublishedAtDescending),
+    }))
+    .filter((section) => section.items.length > 0);
+  const newCount = items.filter(itemIsNew).length;
+  const canRefresh = Boolean(source.feedUrl || source.refreshUrl || source.manualSubscription);
+
+  return (
+    <>
+      <button className="source-detail-back" type="button" onClick={onBack}>
+        <ArrowLeft size={16} /> 返回订阅
+      </button>
+
+      <section className="page-heading compact-heading source-detail-heading">
+        <div className="source-detail-identity">
+          <SourceAvatar source={source} />
+          <div>
+            <p className="eyebrow">
+              {platformLabels[source.platform]} · {source.enabled ? "正在订阅" : "已暂停"}
+            </p>
+            <h1>{source.name}</h1>
+            <p>{source.description}</p>
+            <div className="source-detail-meta" aria-label="来源内容概览">
+              <span>{items.length} 条内容</span>
+              <span>{sections.length} 个分类</span>
+              {newCount > 0 && <strong>{newCount} 条新增</strong>}
+              {source.platform === "bilibili" && (
+                <span>
+                  视频：{source.bilibiliOpenMode === "external" ? "新窗口打开" : "站内查看"}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="heading-actions source-detail-actions">
+          <button className="quiet-button" type="button" onClick={() => onOpenSource(source)}>
+            <PanelTopOpen size={16} /> 来源主页
+          </button>
+          <button className="quiet-button" type="button" onClick={() => onSettings(source)}>
+            <Settings size={16} /> 设置
+          </button>
+          {canRefresh && (
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={syncing}
+              onClick={() => onRefreshSource(source.id)}
+            >
+              <RefreshCw className={syncing ? "is-spinning" : ""} size={16} />
+              {syncing ? "正在更新" : "更新来源"}
+            </button>
+          )}
+        </div>
+      </section>
+
+      {sections.length ? (
+        sections.map((section) => {
+          const SectionIcon = section.icon;
+          const headingId = `source-${source.id}-${section.type}`;
+          return (
+            <section className="content-section source-detail-section" key={section.type} aria-labelledby={headingId}>
+              <div className="section-heading source-detail-section-heading">
+                <div>
+                  <span><SectionIcon size={16} /></span>
+                  <div>
+                    <h2 id={headingId}>{section.label}</h2>
+                    <p>{section.description}</p>
+                  </div>
+                </div>
+                <span>{section.items.length} 条 · 从新到旧</span>
+              </div>
+              <div className="content-grid">
+                {section.items.map((item) => (
+                  <ContentCard
+                    key={item.id}
+                    item={item}
+                    source={source}
+                    savedForLater={Boolean(
+                      laterCollectionId && item.collectionIds.includes(laterCollectionId)
+                    )}
+                    onMarkRead={() => onMarkRead(item.id)}
+                    onOpen={() => onOpen(item)}
+                    onToggleLater={() => onToggleLater(item.id)}
+                    onSave={() => onSave(item.id)}
+                  />
+                ))}
+              </div>
+            </section>
+          );
+        })
+      ) : (
+        <EmptyState
+          icon={Inbox}
+          title="这个来源还没有内容"
+          description="可以先更新一次来源；获取到的内容会按视频、文章和播客分别排列。"
+          actionLabel={canRefresh ? "更新来源" : undefined}
+          onAction={canRefresh ? () => onRefreshSource(source.id) : undefined}
+          secondaryLabel="返回订阅"
+          onSecondary={onBack}
+        />
+      )}
+    </>
+  );
+}
+
 function SubscriptionsView({
   sources,
   totalUnread,
@@ -1927,7 +2206,9 @@ function SubscriptionsView({
   onRefreshSource,
   onToggleSource,
   onRemoveSource,
+  onOpenDetails,
   onOpenSource,
+  onSettings,
 }: {
   sources: Source[];
   totalUnread: number;
@@ -1937,7 +2218,9 @@ function SubscriptionsView({
   onRefreshSource: (id: string) => void;
   onToggleSource: (id: string) => void;
   onRemoveSource: (source: Source) => void;
+  onOpenDetails: (source: Source) => void;
   onOpenSource: (source: Source) => void;
+  onSettings: (source: Source) => void;
 }) {
   const liveCount = sources.filter((source) => source.enabled).length;
   const rssCount = sources.filter(
@@ -1999,9 +2282,10 @@ function SubscriptionsView({
                     <button
                       className="source-name-button"
                       type="button"
-                      onClick={() => onOpenSource(source)}
+                      onClick={() => onOpenDetails(source)}
                     >
-                      {source.name}
+                      <span>{source.name}</span>
+                      <ChevronRight size={14} aria-hidden="true" />
                     </button>
                     <p>{source.description}</p>
                     <span className="mobile-source-meta">
@@ -2036,6 +2320,13 @@ function SubscriptionsView({
                     onClick={() => onOpenSource(source)}
                   >
                     <PanelTopOpen size={17} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`设置 ${source.name}`}
+                    onClick={() => onSettings(source)}
+                  >
+                    <Settings size={17} />
                   </button>
                   {(source.feedUrl || source.refreshUrl || source.manualSubscription) && (
                     <button type="button" aria-label={`更新 ${source.name}`} onClick={() => onRefreshSource(source.id)}>
@@ -2447,6 +2738,246 @@ function Modal({
   );
 }
 
+function SourceSettingsModal({
+  source,
+  onClose,
+  onFetchPreview,
+  onSave,
+}: {
+  source: Source;
+  onClose: () => void;
+  onFetchPreview: (
+    url: string,
+    limit?: number,
+    selections?: string[],
+    manual?: RssHubManualSubscription,
+  ) => Promise<PreviewSuccess>;
+  onSave: (
+    changes: {
+      name: string;
+      description: string;
+      rsshubSelections: RssHubSelection[];
+      bilibiliOpenMode?: "embedded" | "external";
+    },
+    preview?: PreviewSuccess,
+  ) => void;
+}) {
+  const initialSelections =
+    source.rsshubSelections ??
+    (source.rsshubSelection
+      ? [{ id: source.rsshubSelection, title: "已保存的内容范围" }]
+      : []);
+  const [name, setName] = useState(source.name);
+  const [description, setDescription] = useState(source.description);
+  const [bilibiliOpenMode, setBilibiliOpenMode] = useState<"embedded" | "external">(
+    source.bilibiliOpenMode === "external" ? "external" : "embedded",
+  );
+  const [scopeOptions, setScopeOptions] = useState<PreviewSuccess["options"]>();
+  const [selectedScopeIds, setSelectedScopeIds] = useState(
+    initialSelections.map((selection) => selection.id),
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const canRediscoverScopes =
+    source.provider === "rsshub" && Boolean(source.refreshUrl) && !source.manualSubscription;
+
+  async function rediscoverScopes() {
+    if (!source.refreshUrl) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await onFetchPreview(source.refreshUrl, 20);
+      if (result.mode !== "select" || !result.options?.length) {
+        setError("这个链接目前只发现一个可用内容范围，无需重新选择。");
+        return;
+      }
+      setScopeOptions(result.options);
+      const availableIds = new Set(result.options.map((option) => option.id));
+      setSelectedScopeIds((current) => current.filter((id) => availableIds.has(id)));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "暂时无法重新识别这个来源。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function saveSettings() {
+    if (!name.trim()) {
+      setError("显示名称不能为空。");
+      return;
+    }
+    let preview: PreviewSuccess | undefined;
+    let rsshubSelections = initialSelections;
+    if (scopeOptions?.length) {
+      if (!selectedScopeIds.length) {
+        setError("至少保留一个内容范围。");
+        return;
+      }
+      if (!source.refreshUrl) return;
+      setLoading(true);
+      setError("");
+      try {
+        preview = await onFetchPreview(source.refreshUrl, 12, selectedScopeIds);
+        rsshubSelections =
+          preview.source.rsshubSelections ??
+          scopeOptions
+            .filter((option) => selectedScopeIds.includes(option.id))
+            .map(({ id, title, docsUrl }) => ({ id, title, docsUrl }));
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "保存内容范围前的验证失败了。");
+        setLoading(false);
+        return;
+      }
+      setLoading(false);
+    }
+    onSave(
+      {
+        name: name.trim(),
+        description: description.trim(),
+        rsshubSelections,
+        bilibiliOpenMode:
+          source.platform === "bilibili" ? bilibiliOpenMode : undefined,
+      },
+      preview,
+    );
+  }
+
+  return (
+    <Modal
+      title={`设置 ${source.name}`}
+      description="修改来源信息，或重新选择这个链接要持续更新的内容。"
+      onClose={onClose}
+      size="medium"
+    >
+      <div className="modal-content source-settings-content">
+        <label>
+          <span className="field-label">显示名称</span>
+          <input value={name} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <label>
+          <span className="field-label">来源说明</span>
+          <textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            rows={3}
+            placeholder="写一句为什么订阅这个来源"
+          />
+        </label>
+
+        <section className="source-origin-card">
+          <span>原始公开链接</span>
+          <code>{source.refreshUrl ?? source.feedUrl ?? source.url}</code>
+          <small>为保证来源身份和已读记录稳定，设置中不会替换这个地址。</small>
+        </section>
+
+        {source.platform === "bilibili" && (
+          <section className="source-video-open-settings">
+            <div>
+              <strong>视频打开方式</strong>
+              <p>高清、登录与大会员播放能力通常需要在 Bilibili 网页中使用。</p>
+            </div>
+            <div className="source-open-mode-options" role="radiogroup" aria-label="视频打开方式">
+              <label className={bilibiliOpenMode === "embedded" ? "is-selected" : ""}>
+                <input
+                  type="radio"
+                  name="bilibili-open-mode"
+                  value="embedded"
+                  checked={bilibiliOpenMode === "embedded"}
+                  onChange={() => setBilibiliOpenMode("embedded")}
+                />
+                <span><PanelTopOpen size={16} /></span>
+                <div>
+                  <strong>站内查看</strong>
+                  <small>留在自选中阅读，返回路径更短</small>
+                </div>
+              </label>
+              <label className={bilibiliOpenMode === "external" ? "is-selected" : ""}>
+                <input
+                  type="radio"
+                  name="bilibili-open-mode"
+                  value="external"
+                  checked={bilibiliOpenMode === "external"}
+                  onChange={() => setBilibiliOpenMode("external")}
+                />
+                <span><ExternalLink size={16} /></span>
+                <div>
+                  <strong>在新窗口打开 Bilibili</strong>
+                  <small>使用平台登录、高清与大会员播放能力</small>
+                </div>
+              </label>
+            </div>
+          </section>
+        )}
+
+        {initialSelections.length > 0 && (
+          <section className="source-scope-settings">
+            <div className="source-scope-heading">
+              <div>
+                <strong>订阅的内容范围</strong>
+                <p>多个范围仍然属于同一个来源。</p>
+              </div>
+              {canRediscoverScopes && (
+                <button type="button" disabled={loading} onClick={() => void rediscoverScopes()}>
+                  <RefreshCw className={loading ? "is-spinning" : ""} size={15} />
+                  重新选择内容范围
+                </button>
+              )}
+            </div>
+
+            {!scopeOptions?.length ? (
+              <div className="current-scope-list">
+                {initialSelections.map((selection) => (
+                  <span key={selection.id}>{selection.title}</span>
+                ))}
+              </div>
+            ) : (
+              <div className="source-settings-scope-list">
+                {scopeOptions.map((option) => {
+                  const checked = selectedScopeIds.includes(option.id);
+                  return (
+                    <label className={checked ? "is-selected" : ""} key={option.id}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) =>
+                          setSelectedScopeIds((current) =>
+                            event.target.checked
+                              ? [...current, option.id]
+                              : current.filter((id) => id !== option.id),
+                          )
+                        }
+                      />
+                      <span>{checked && <Check size={13} />}</span>
+                      <div><strong>{option.title}</strong><small>{option.description}</small></div>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <p className="source-scope-note">
+              修改后不会删除旧内容；以后获取的内容仍写入「{source.name}」。
+            </p>
+          </section>
+        )}
+
+        {error && <p className="field-error" role="alert">{error}</p>}
+      </div>
+      <div className="modal-footer simple-footer">
+        <button className="quiet-button" type="button" onClick={onClose}>取消</button>
+        <button
+          className="primary-button"
+          type="button"
+          disabled={loading || !name.trim()}
+          onClick={() => void saveSettings()}
+        >
+          {loading ? <RefreshCw className="is-spinning" size={16} /> : <Check size={16} />}
+          保存设置
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function AddSubscriptionModal({
   existingSources,
   sourceCount,
@@ -2460,50 +2991,45 @@ function AddSubscriptionModal({
   onFetchPreview: (
     url: string,
     limit?: number,
-    selection?: string,
+    selections?: string[],
     manual?: RssHubManualSubscription,
   ) => Promise<PreviewSuccess>;
   onConfirm: (preview: PreviewSuccess, name: string, includeRecent: boolean) => void;
 }) {
-  const [entry, setEntry] = useState<"auto" | Platform>("auto");
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<PreviewSuccess | null>(null);
+  const [selectionPreview, setSelectionPreview] = useState<PreviewSuccess | null>(null);
+  const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [includeRecent, setIncludeRecent] = useState(true);
-  const [wechatKind, setWechatKind] = useState<"url" | RssHubManualSubscription["kind"]>("url");
+  const [wechatAdvancedOpen, setWechatAdvancedOpen] = useState(false);
+  const [wechatKind, setWechatKind] = useState<RssHubManualSubscription["kind"]>("wechat-uread");
   const [wechatUserid, setWechatUserid] = useState("");
   const [wechatBiz, setWechatBiz] = useState("");
   const [wechatHid, setWechatHid] = useState("");
   const [wechatCid, setWechatCid] = useState("");
   const [wechat2RssId, setWechat2RssId] = useState("");
 
-  const entryConfig =
-    subscriptionEntries.find((candidate) => candidate.id === entry) ?? subscriptionEntries[0]!;
-  const usesWechatParameters = entry === "wechat" && wechatKind !== "url";
+  const usesWechatParameters = wechatAdvancedOpen;
 
   function resetResult() {
     setError("");
     setPreview(null);
+    setSelectionPreview(null);
+    setSelectedOptionIds([]);
   }
 
-  function selectSubscriptionEntry(nextEntry: "auto" | Platform) {
-    if (nextEntry === entry) return;
-    setEntry(nextEntry);
+  function toggleWechatAdvanced() {
+    setWechatAdvancedOpen((current) => !current);
     setUrl("");
     setName("");
-    setWechatKind("url");
-    setWechatUserid("");
-    setWechatBiz("");
-    setWechatHid("");
-    setWechatCid("");
-    setWechat2RssId("");
     resetResult();
   }
 
   function wechatManual(): RssHubManualSubscription | undefined {
-    if (entry !== "wechat" || wechatKind === "url") return undefined;
+    if (!wechatAdvancedOpen) return undefined;
     if (wechatKind === "wechat-uread") {
       return { kind: wechatKind, userid: wechatUserid.trim() };
     }
@@ -2525,7 +3051,7 @@ function AddSubscriptionModal({
     return Boolean(manual.id);
   }
 
-  async function loadPreview(selection?: string) {
+  async function loadPreview(selections?: string[]) {
     const trimmed = url.trim();
     const manual = wechatManual();
     if (!usesWechatParameters && !trimmed) {
@@ -2537,7 +3063,7 @@ function AddSubscriptionModal({
       return;
     }
 
-    if (!selection) {
+    if (!selections?.length) {
       const duplicate = manual
         ? existingSources.find(
             (source) => JSON.stringify(source.manualSubscription) === JSON.stringify(manual),
@@ -2557,9 +3083,14 @@ function AddSubscriptionModal({
     setError("");
     setLoading(true);
     try {
-      const result = await onFetchPreview(trimmed, 12, selection, manual);
+      const result = await onFetchPreview(trimmed, 12, selections, manual);
       setPreview(result);
-      setName(result.source.title);
+      if (result.mode === "select") {
+        setSelectionPreview(result);
+        setSelectedOptionIds([]);
+      } else {
+        setName(result.source.title);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "暂时没认出这个地址，请重试。");
     } finally {
@@ -2569,6 +3100,8 @@ function AddSubscriptionModal({
 
   async function identify() {
     setPreview(null);
+    setSelectionPreview(null);
+    setSelectedOptionIds([]);
     await loadPreview();
   }
 
@@ -2580,32 +3113,37 @@ function AddSubscriptionModal({
       size="large"
     >
       <div className="modal-content add-source-content">
-        <div className="platform-entry-heading">
-          <label className="field-label">选择平台</label>
-          <p>不同平台会提供适合它的地址和订阅范围。</p>
-        </div>
-        <div className="platform-entry-grid" role="list" aria-label="订阅平台">
-          {subscriptionEntries.map((candidate) => (
-            <button
-              key={candidate.id}
-              type="button"
-              className={entry === candidate.id ? "is-selected" : ""}
-              aria-pressed={entry === candidate.id}
-              onClick={() => selectSubscriptionEntry(candidate.id)}
-            >
-              {candidate.label}
-            </button>
-          ))}
-        </div>
-        <div className="entry-guidance">
-          <strong>{entryConfig.label}</strong>
-          <span>{entryConfig.hint}</span>
+        <div className="parser-entry-heading">
+          <div>
+            <label className="field-label">链接或 RSS</label>
+            <p>粘贴一次即可自动识别网站、Feed 和中文内容平台。</p>
+          </div>
+          <span><Sparkles size={15} /> 自动识别</span>
         </div>
 
-        {entry === "wechat" && (
+        <section className="supported-platforms" aria-labelledby="supported-platforms-title">
+          <div className="supported-platforms-heading">
+            <strong id="supported-platforms-title">已支持的平台</strong>
+            <span>无需预先选择</span>
+          </div>
+          <div className="supported-platform-list" role="list">
+            {supportedPlatforms.map((platform) => (
+              <span key={platform.id} role="listitem">{platform.label}</span>
+            ))}
+          </div>
+          <button className="wechat-advanced-toggle" type="button" onClick={toggleWechatAdvanced}>
+            <span>
+              <strong>微信公众号高级设置</strong>
+              <small>使用公众号 ID、Biz / HID 或 Wechat2RSS ID</small>
+            </span>
+            <ChevronRight size={17} className={wechatAdvancedOpen ? "is-open" : ""} />
+          </button>
+        </section>
+
+        {wechatAdvancedOpen && (
           <section className="wechat-entry" aria-labelledby="wechat-entry-title">
             <div>
-              <label className="field-label" id="wechat-entry-title">微信公众号专用参数</label>
+              <label className="field-label" id="wechat-entry-title">微信公众号高级设置</label>
               <p>普通文章链接不能可靠推导历史订阅，可改用 RSSHub 支持的公众号标识。</p>
             </div>
             <select
@@ -2615,7 +3153,6 @@ function AddSubscriptionModal({
                 resetResult();
               }}
             >
-              <option value="url">公众号文章链接</option>
               <option value="wechat-uread">优读公众号 ID</option>
               <option value="wechat-mp">公众号栏目 Biz / HID</option>
               <option value="wechat-wechat2rss">Wechat2RSS ID</option>
@@ -2657,7 +3194,7 @@ function AddSubscriptionModal({
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void identify();
                 }}
-                placeholder={entryConfig.placeholder}
+                placeholder="粘贴 URL 或包含一个 URL 的分享文案"
                 autoComplete="url"
                 inputMode="url"
               />
@@ -2670,25 +3207,6 @@ function AddSubscriptionModal({
           </>
         )}
         {error && <p className="field-error" role="alert">{error}</p>}
-
-        {!preview && (
-          <div className="supported-sources">
-            <div>
-              <span className="source-support-icon bilibili-mark">B</span>
-              <div>
-                <strong>中文内容平台</strong>
-                <p>支持主页、允许的短链与分享文案；识别后选择具体订阅范围</p>
-              </div>
-            </div>
-            <div>
-              <span className="source-support-icon"><Rss size={18} /></span>
-              <div>
-                <strong>RSS / 播客</strong>
-                <p>自动识别并带回最新内容预览</p>
-              </div>
-            </div>
-          </div>
-        )}
 
         {loading && (
           <div className="identify-state" role="status" aria-live="polite">
@@ -2720,13 +3238,32 @@ function AddSubscriptionModal({
                 </div>
                 <div className="subscription-choice-list">
                   {preview.options?.map((option) => (
-                    <button key={option.id} type="button" disabled={loading} onClick={() => void loadPreview(option.id)}>
-                      <span><Rss size={16} /></span>
+                    <label
+                      className={selectedOptionIds.includes(option.id) ? "is-selected" : ""}
+                      key={option.id}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedOptionIds.includes(option.id)}
+                        disabled={loading}
+                        onChange={(event) => {
+                          setSelectedOptionIds((current) =>
+                            event.target.checked
+                              ? [...current, option.id]
+                              : current.filter((id) => id !== option.id),
+                          );
+                        }}
+                      />
+                      <span className="scope-choice-check">
+                        {selectedOptionIds.includes(option.id) && <Check size={13} />}
+                      </span>
                       <div><strong>{option.title}</strong><p>{option.description}</p></div>
-                      <ChevronRight size={17} />
-                    </button>
+                    </label>
                   ))}
                 </div>
+                <p className="scope-selection-count">
+                  已选择 {selectedOptionIds.length} 项；这些内容会合并为一个来源。
+                </p>
               </div>
             ) : (
               <>
@@ -2752,10 +3289,28 @@ function AddSubscriptionModal({
                   <div className="link-mode-note">
                     <Rss size={16} />
                     <p>
-                      使用 RSSHub 路由
-                      {preview.source.routeTitle ? `「${preview.source.routeTitle}」` : ""}
-                      ；实例地址与访问密钥不会保存到浏览器。
+                      使用 {preview.source.rsshubSelections?.length ?? 1} 个 RSSHub 内容范围
+                      {preview.source.routeTitle ? `（${preview.source.routeTitle}）` : ""}
+                      ；它们作为一个来源保存，实例地址与访问密钥不会进入浏览器。
                     </p>
+                  </div>
+                )}
+
+                {Boolean(preview.source.rsshubSelections?.length) && (
+                  <div className="selected-scope-summary">
+                    <div>
+                      <strong>已选内容范围</strong>
+                      <div>
+                        {preview.source.rsshubSelections?.map((selection) => (
+                          <span key={selection.id}>{selection.title}</span>
+                        ))}
+                      </div>
+                    </div>
+                    {selectionPreview && (
+                      <button type="button" onClick={() => setPreview(selectionPreview)}>
+                        重新选择
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -2764,7 +3319,7 @@ function AddSubscriptionModal({
                     <strong>尝试其他订阅内容</strong>
                     <div>
                       {preview.options?.map((option) => (
-                        <button key={option.id} type="button" disabled={loading} onClick={() => void loadPreview(option.id)}>
+                        <button key={option.id} type="button" disabled={loading} onClick={() => void loadPreview([option.id])}>
                           {option.title}
                         </button>
                       ))}
@@ -2816,11 +3371,26 @@ function AddSubscriptionModal({
             <button
               className="primary-button"
               type="button"
-              disabled={loading || (usesWechatParameters ? !manualIsComplete(wechatManual()) : !url.trim()) || preview?.mode === "select"}
-              onClick={() => void identify()}
+              disabled={
+                loading ||
+                (preview?.mode === "select"
+                  ? selectedOptionIds.length === 0
+                  : usesWechatParameters
+                    ? !manualIsComplete(wechatManual())
+                    : !url.trim())
+              }
+              onClick={() =>
+                void (preview?.mode === "select"
+                  ? loadPreview(selectedOptionIds)
+                  : identify())
+              }
             >
               {loading ? <RefreshCw className="is-spinning" size={16} /> : <ArrowRight size={16} />}
-              {preview?.mode === "select" ? "请先选择订阅内容" : "识别订阅源"}
+              {preview?.mode === "select"
+                ? selectedOptionIds.length
+                  ? `预览已选 ${selectedOptionIds.length} 项`
+                  : "至少选择一项"
+                : "识别订阅源"}
             </button>
           )}
         </div>
@@ -3172,6 +3742,7 @@ function FocusModal({
   onOpenItem: (item: ContentItem) => void;
   onDiscover: () => void;
 }) {
+  const opensExternally = Boolean(item && opensBilibiliVideoExternally(source, item));
   return (
     <Modal title="安静阅读" description={item ? `还有 ${remaining} 条未读内容` : "今日收件箱已读完"} onClose={onClose} size="focus">
       {item ? (
@@ -3194,7 +3765,8 @@ function FocusModal({
             <p>{item.summary}</p>
             <div className="focus-actions">
               <button className="primary-button" type="button" onClick={() => onOpenItem(item)}>
-                在本站查看 <PanelTopOpen size={16} />
+                {opensExternally ? "打开 Bilibili" : "在本站查看"}
+                {opensExternally ? <ExternalLink size={16} /> : <PanelTopOpen size={16} />}
               </button>
               <button className="secondary-button" type="button" onClick={() => onMarkRead(item.id, true)}>
                 标为读过，下一条 <ArrowRight size={16} />

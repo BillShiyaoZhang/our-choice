@@ -32,6 +32,12 @@ export type RssHubManualSubscription =
   | { kind: "wechat-mp"; biz: string; hid: string; cid?: string }
   | { kind: "wechat-wechat2rss"; id: string };
 
+export interface RssHubSelection {
+  id: string;
+  title: string;
+  docsUrl?: string;
+}
+
 export interface Source {
   id: string;
   name: string;
@@ -44,6 +50,10 @@ export interface Source {
   provider?: "rsshub";
   /** Stable candidate id, revalidated against current Radar rules on refresh. */
   rsshubSelection?: string;
+  /** One or more Radar scopes combined and managed as this single source. */
+  rsshubSelections?: RssHubSelection[];
+  /** How videos from a Bilibili source open. Missing legacy values mean embedded. */
+  bilibiliOpenMode?: "embedded" | "external";
   /** Non-secret identifiers for an allowlisted manual RSSHub route. */
   manualSubscription?: RssHubManualSubscription;
   initials: string;

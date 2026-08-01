@@ -611,6 +611,12 @@ interface PreviewOption {
   docsUrl?: string;
 }
 
+interface RssHubSelectionDescriptor {
+  id: string;
+  title: string;
+  docsUrl?: string;
+}
+
 type ManualSubscription =
   | { kind: "wechat-uread"; userid: string }
   | { kind: "wechat-mp"; biz: string; hid: string; cid?: string }
@@ -1111,6 +1117,104 @@ async function tryRssHubPreview(
   }
 }
 
+function selectionDescriptors(matches: RadarMatch[]): RssHubSelectionDescriptor[] {
+  return matches.map((match) => ({
+    id: match.id,
+    title: match.title ?? "RSSHub 订阅",
+    docsUrl: match.docs,
+  }));
+}
+
+async function tryCombinedRssHubPreview(
+  config: RssHubConfig,
+  initialUrl: URL,
+  limit: number,
+  matches: RadarMatch[],
+  platform?: LinkPlatform,
+): Promise<RssHubOutcome> {
+  const outcomes = new Array<RssHubOutcome>(matches.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(3, matches.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < matches.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        outcomes[index] = await tryRssHubPreview(
+          config,
+          initialUrl,
+          limit,
+          matches[index]!,
+          platform,
+        );
+      }
+    }),
+  );
+
+  const successes = outcomes.flatMap((outcome) =>
+    outcome.kind === "success" ? [outcome.payload] : [],
+  ) as Array<{
+    source: Record<string, unknown>;
+    items: Array<{ upstreamId?: string; url?: string } & Record<string, unknown>>;
+    fetchedAt?: string;
+  }>;
+  const failures = outcomes.filter((outcome) => outcome.kind === "failed");
+  if (!successes.length) {
+    return {
+      kind: "failed",
+      match: matches[0],
+      message:
+        failures[0]?.kind === "failed"
+          ? failures[0].message
+          : "RSSHub 路由暂时无法生成订阅内容。",
+    };
+  }
+
+  const first = successes[0]!;
+  const deduplicated = new Map<string, (typeof first.items)[number]>();
+  for (const payload of successes) {
+    for (const item of payload.items) {
+      const key = item.url || item.upstreamId;
+      if (key && !deduplicated.has(key)) deduplicated.set(key, item);
+    }
+  }
+  const selections = selectionDescriptors(matches);
+  const firstSource = first.source;
+  const routeTitles = selections.map((selection) => selection.title).join("、");
+
+  return {
+    kind: "success",
+    payload: {
+      ok: true,
+      mode: "live",
+      source: {
+        ...firstSource,
+        description:
+          selections.length > 1
+            ? `合并订阅：${routeTitles}`
+            : firstSource.description,
+        refreshUrl: initialUrl.href,
+        provider: "rsshub",
+        rsshubSelections: selections,
+        rsshubSelection: selections.length === 1 ? selections[0]!.id : undefined,
+        rsshubRoute: matches.length === 1 ? matches[0]!.route : undefined,
+        routeTitle: selections.length === 1 ? selections[0]!.title : routeTitles,
+        docsUrl: selections.length === 1 ? selections[0]!.docsUrl : undefined,
+      },
+      items: [...deduplicated.values()].slice(0, limit),
+      fetchedAt: successes.map((payload) => payload.fetchedAt).find(Boolean) ?? new Date().toISOString(),
+      warning:
+        failures.length > 0
+          ? {
+              code: "RSSHUB_PARTIAL",
+              message: `${failures.length} 个内容范围暂时更新失败；已保留全部选择，并显示其余范围的内容。`,
+            }
+          : undefined,
+    },
+  };
+}
+
 function previewOptions(matches: RadarMatch[]): PreviewOption[] {
   return matches.map((match) => ({
     id: match.id,
@@ -1283,7 +1387,7 @@ async function rssHubCandidateOutcome(
   url: URL,
   limit: number,
   platform: LinkPlatform | undefined,
-  selection: string | undefined,
+  selections: string[],
   preferredTitle?: string,
 ) {
   let matches: RadarMatch[];
@@ -1295,26 +1399,35 @@ async function rssHubCandidateOutcome(
       preferredTitle,
     );
   } catch {
-    return { outcome: { kind: "failed", message: "暂时无法连接 RSSHub。" } as RssHubOutcome, matches: [] };
+    return {
+      outcome: { kind: "failed", message: "暂时无法连接 RSSHub。" } as RssHubOutcome,
+      matches: [] as RadarMatch[],
+      selectedMatches: [] as RadarMatch[],
+    };
   }
   if (matches.length === 0) {
-    return { outcome: { kind: "no-route" } as RssHubOutcome, matches };
+    return {
+      outcome: { kind: "no-route" } as RssHubOutcome,
+      matches,
+      selectedMatches: [] as RadarMatch[],
+    };
   }
 
-  if (!selection && matches.length > 1) {
+  if (!selections.length && matches.length > 1) {
     return {
       outcome: {
         kind: "success",
         payload: selectRssHubPreview(url, platform, matches),
       } as RssHubOutcome,
       matches,
+      selectedMatches: [] as RadarMatch[],
     };
   }
 
-  const match = selection
-    ? matches.find((candidate) => candidate.id === selection)
-    : matches[0];
-  if (!match) {
+  const selectedMatches = selections.length
+    ? selections.map((selection) => matches.find((candidate) => candidate.id === selection))
+    : [matches[0]];
+  if (selectedMatches.some((match) => !match)) {
     throw new PreviewError(
       "INVALID_SELECTION",
       "这个订阅选项已经变化，请重新识别来源后再选择。",
@@ -1322,10 +1435,44 @@ async function rssHubCandidateOutcome(
       409,
     );
   }
+  const verifiedMatches = selectedMatches as RadarMatch[];
   return {
-    outcome: await tryRssHubPreview(config, url, limit, match, platform),
+    outcome: await tryCombinedRssHubPreview(
+      config,
+      url,
+      limit,
+      verifiedMatches,
+      platform,
+    ),
     matches,
+    selectedMatches: verifiedMatches,
   };
+}
+
+function requestedRssHubSelections(value: unknown, legacyValue: unknown) {
+  if (value === undefined) {
+    if (legacyValue === undefined) return [];
+    if (typeof legacyValue !== "string" || !legacyValue || legacyValue.length > 2_048) {
+      throw new PreviewError("INVALID_SELECTION", "订阅选项无效，请重新识别。", false, 400);
+    }
+    return [legacyValue];
+  }
+  if (!Array.isArray(value) || value.length < 1 || value.length > 20) {
+    throw new PreviewError(
+      "INVALID_SELECTION",
+      "请至少选择一个、最多选择二十个订阅内容范围。",
+      false,
+      400,
+    );
+  }
+  const selections: string[] = [];
+  for (const candidate of value) {
+    if (typeof candidate !== "string" || !candidate || candidate.length > 2_048) {
+      throw new PreviewError("INVALID_SELECTION", "订阅选项无效，请重新识别。", false, 400);
+    }
+    if (!selections.includes(candidate)) selections.push(candidate);
+  }
+  return selections;
 }
 
 export async function POST(request: Request) {
@@ -1334,6 +1481,7 @@ export async function POST(request: Request) {
       url?: unknown;
       limit?: unknown;
       selection?: unknown;
+      selections?: unknown;
       manual?: unknown;
     };
     const requestedLimit = Number(payload.limit);
@@ -1341,10 +1489,7 @@ export async function POST(request: Request) {
       ? Math.min(20, Math.max(1, Math.round(requestedLimit)))
       : 12;
     const rssHub = configuredRssHub();
-    const selection =
-      typeof payload.selection === "string" && payload.selection.length <= 2_048
-        ? payload.selection
-        : undefined;
+    const selections = requestedRssHubSelections(payload.selections, payload.selection);
 
     if (payload.manual !== undefined) {
       if (!rssHub) {
@@ -1394,36 +1539,49 @@ export async function POST(request: Request) {
 
     if (platform) {
       if (rssHub) {
-        const { outcome, matches } = await rssHubCandidateOutcome(
+        const { outcome, matches, selectedMatches } = await rssHubCandidateOutcome(
           rssHub,
           initialUrl,
           limit,
           platform,
-          selection,
+          selections,
           normalized.preferredTitle,
         );
         if (outcome.kind === "success") return json(outcome.payload);
+        const fallback = platformLinkPreview(
+          initialUrl,
+          platform,
+          outcome.kind,
+          matches,
+          outcome.kind === "failed" ? outcome.match : undefined,
+        )!;
         return json(
-          platformLinkPreview(
-            initialUrl,
-            platform,
-            outcome.kind,
-            matches,
-            outcome.kind === "failed" ? outcome.match : undefined,
-          ),
+          selectedMatches.length
+            ? {
+                ...fallback,
+                source: {
+                  ...fallback.source,
+                  provider: "rsshub",
+                  refreshUrl: initialUrl.href,
+                  rsshubSelections: selectionDescriptors(selectedMatches),
+                  rsshubSelection:
+                    selectedMatches.length === 1 ? selectedMatches[0]!.id : undefined,
+                },
+              }
+            : fallback,
         );
       }
       return json(platformLinkPreview(initialUrl, platform));
     }
 
     try {
-      if (rssHub && selection) {
+      if (rssHub && selections.length) {
         const { outcome } = await rssHubCandidateOutcome(
           rssHub,
           initialUrl,
           limit,
           undefined,
-          selection,
+          selections,
         );
         if (outcome.kind === "success") return json(outcome.payload);
       }
@@ -1461,7 +1619,7 @@ export async function POST(request: Request) {
           initialUrl,
           limit,
           undefined,
-          selection,
+          selections,
         );
         if (outcome.kind === "success") return json(outcome.payload);
       }

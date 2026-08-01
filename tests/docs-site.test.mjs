@@ -103,20 +103,46 @@ test("Dev Container starts the workspace and RSSHub as isolated Compose services
   assert.equal(compose.match(/^\s+ports:/gm)?.length, 1);
 });
 
-test("documents and exposes platform-specific subscription choices", async () => {
-  const [html, app] = await Promise.all([
+test("documents and exposes one parser, multi-scope sources, and source settings", async () => {
+  const [html, app, model] = await Promise.all([
     text("docs/index.html"),
     text("app/our-choice-app.tsx"),
+    text("app/lib/model.ts"),
   ]);
 
-  assert.match(html, /选择平台入口/);
-  assert.match(html, /投稿、动态、图文、回答、专栏/);
-  assert.match(app, /选择平台/);
+  assert.match(html, /唯一的“链接或 RSS”输入/);
+  assert.match(html, /同时勾选投稿、动态、图文、回答、专栏/);
+  assert.match(html, /始终视为一个来源/);
+  assert.match(app, /supported-platform-list/);
+  assert.doesNotMatch(app, /className="platform-entry-grid"/);
   assert.match(app, /选择要订阅的内容/);
-  assert.match(app, /微信公众号专用参数/);
-  assert.match(app, /function selectSubscriptionEntry/);
-  assert.match(app, /setUrl\(""\)/);
+  assert.match(app, /微信公众号高级设置/);
+  assert.match(app, /selectedOptionIds/);
+  assert.match(app, /function SourceSettingsModal/);
+  assert.match(app, /设置 \$\{source\.name\}/);
+  assert.match(app, /rsshubSelections/);
+  assert.match(model, /export interface RssHubSelection/);
+  assert.match(model, /rsshubSelections\?: RssHubSelection\[\]/);
   assert.match(app, /topbar-add[^>]+aria-label="添加订阅"/);
+});
+
+test("opens source details by content type and respects Bilibili video open preferences", async () => {
+  const [html, app, model] = await Promise.all([
+    text("docs/index.html"),
+    text("app/our-choice-app.tsx"),
+    text("app/lib/model.ts"),
+  ]);
+
+  assert.match(html, /视频、文章和播客分区展示/);
+  assert.match(html, /在新窗口打开 Bilibili/);
+  assert.match(app, /function SourceDetailView/);
+  assert.match(app, /sourceContentSections/);
+  assert.match(app, /comparePublishedAtDescending/);
+  assert.match(app, /onOpenDetails/);
+  assert.match(app, /视频打开方式/);
+  assert.match(app, /bilibiliOpenMode/);
+  assert.match(app, /window\.open\(url, "_blank", "noopener,noreferrer"\)/);
+  assert.match(model, /bilibiliOpenMode\?: "embedded" \| "external"/);
 });
 
 test("deploys docs through a least-privilege GitHub Pages workflow", async () => {
