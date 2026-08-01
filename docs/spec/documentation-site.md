@@ -63,7 +63,7 @@
 - 对普通网站仍优先使用其公开 RSS/Atom 或 HTML Feed 声明；直接读取失败后才尝试已配置的 RSSHub Radar 规则，从而扩展到现有十二个平台之外的来源。
 - Docker Compose 提供与应用分离的官方 RSSHub 容器，并通过内部网络连接；两者分别运行和遵守各自许可证。直接运行 `npm run dev` 时由开发者显式配置外部或本地 RSSHub 地址。
 - Dev Container 使用独立的 Compose 文件：`workspace` 服务提供 Node.js 22 开发环境与源码挂载，`rsshub` sidecar 自动随工作区启动；开发容器通过 `http://rsshub:1200` 访问它，不要求 Docker-in-Docker，也不向宿主机公开 RSSHub 端口。
-- Dev Container 自动安装锁定依赖并转发应用的 `3000` 端口。可选的宿主机 `RSSHUB_ACCESS_KEY` 同时传给工作区的 `RSSHUB_ACCESS_KEY` 和 sidecar 的 `ACCESS_KEY`；未设置时允许本地开发环境无密钥运行。
+- 开发服务器监听 `0.0.0.0`，确保 Dev Container 的 IPv4 端口转发能够访问应用；Dev Container 自动安装锁定依赖并转发应用的 `3000` 端口。可选的宿主机 `RSSHUB_ACCESS_KEY` 同时传给工作区的 `RSSHUB_ACCESS_KEY` 和 sidecar 的 `ACCESS_KEY`；未设置时允许本地开发环境无密钥运行。
 
 ## 验收标准
 
@@ -75,5 +75,5 @@
 - 文档专项测试、现有测试、构建和 lint 全部通过。
 - 上述十二个平台均有确定性的接口测试，验证平台识别、链接模式、原始链接保留和警告信息。
 - RSSHub/Radar 测试使用本地模拟响应，验证域名规则发现、路径参数替换、实时 Feed 解析、密钥不泄露、无规则/上游失败降级，以及未配置时的兼容行为；测试不得依赖真实 RSSHub 或平台网络。
-- Dev Container 配置测试验证 Compose 文件、工作区服务、源码挂载、RSSHub sidecar、内部服务地址、密钥映射、`3000` 端口转发与依赖安装命令保持一致；Compose 配置必须可由 Docker 正常解析。
+- Dev Container 配置测试验证 Compose 文件、工作区服务、源码挂载、RSSHub sidecar、内部服务地址、密钥映射、开发服务器监听地址、`3000` 端口转发与依赖安装命令保持一致；Compose 配置必须可由 Docker 正常解析。
 - GitHub Pages URL 可公开访问并返回文档首页。

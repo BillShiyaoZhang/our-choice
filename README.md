@@ -59,7 +59,7 @@ docker compose up --build
 - `workspace` 开发容器挂载当前源码并自动执行 `npm ci`
 - 独立的 RSSHub sidecar 自动启动
 - 应用通过 `RSSHUB_BASE_URL=http://rsshub:1200` 访问 RSSHub
-- 编辑器自动转发应用的 `3000` 端口
+- 开发服务器监听容器网络，编辑器自动转发应用的 `3000` 端口
 
 如需启用 RSSHub 访问密钥，请在启动编辑器前给宿主机设置 `RSSHUB_ACCESS_KEY`；它会同时传给应用和 RSSHub。修改 `.devcontainer/` 后需执行 **Dev Containers: Rebuild Container**。
 

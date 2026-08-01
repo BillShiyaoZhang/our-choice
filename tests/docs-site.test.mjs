@@ -52,11 +52,13 @@ test("integrates docs with development, builds, and product navigation", async (
 });
 
 test("Dev Container starts the workspace and RSSHub as isolated Compose services", async () => {
-  const [devContainerText, compose] = await Promise.all([
+  const [devContainerText, compose, packageJsonText] = await Promise.all([
     text(".devcontainer/devcontainer.json"),
     text(".devcontainer/compose.yaml"),
+    text("package.json"),
   ]);
   const devContainer = JSON.parse(devContainerText);
+  const packageJson = JSON.parse(packageJsonText);
 
   assert.equal(devContainer.dockerComposeFile, "compose.yaml");
   assert.equal(devContainer.service, "workspace");
@@ -69,6 +71,7 @@ test("Dev Container starts the workspace and RSSHub as isolated Compose services
   );
   assert.equal(devContainer.remoteUser, "node");
   assert.equal("image" in devContainer, false);
+  assert.match(packageJson.scripts.dev, /vinext dev --hostname 0\.0\.0\.0$/);
 
   assert.match(compose, /^services:\s*\n\s{2}workspace:/m);
   assert.match(compose, /mcr\.microsoft\.com\/devcontainers\/javascript-node:1-22-bookworm/);
