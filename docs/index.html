@@ -97,7 +97,7 @@
               <ul class="check-list">
                 <li>RSS / Atom / 播客预览与订阅</li>
                 <li>网站公开 Feed 自动发现</li>
-                <li>Bilibili 创作者链接模式</li>
+                <li>十二个主流中文内容平台的链接模式</li>
                 <li>频道与具体内容在站内主区域加载</li>
                 <li>订阅基线、查看记录与准确的新增判定</li>
                 <li>在浏览器与平台允许时复用外部登录会话</li>
@@ -112,7 +112,7 @@
               <ul class="dash-list">
                 <li>没有账号和跨设备云同步</li>
                 <li>不会绕过付费墙或来源访问限制</li>
-                <li>Bilibili 链接模式不自动拉取更新</li>
+                <li>中文内容平台链接模式不自动拉取更新</li>
                 <li>来源可通过安全响应头禁止被第三方页面内嵌</li>
                 <li>发现偏好仅在当前浏览器生效</li>
                 <li>清除站点数据前需要先导出备份</li>
@@ -157,7 +157,7 @@ npm run dev</code></pre>
           </div>
         </section>
 
-        <section class="doc-section section-block" id="subscriptions" data-doc-section data-keywords="订阅 RSS Atom podcast 播客 B站 bilibili 刷新 暂停 删除">
+        <section class="doc-section section-block" id="subscriptions" data-doc-section data-keywords="订阅 RSS Atom podcast 播客 B站 bilibili 微信公众号 知乎 小红书 抖音 快手 微博 小宇宙 刷新 暂停 删除">
           <div class="section-heading compact"><span class="section-number">04</span><div><h2>添加与管理订阅</h2></div></div>
           <div class="prose-grid">
             <div>
@@ -172,7 +172,7 @@ npm run dev</code></pre>
             <div>
               <h3>管理来源</h3>
               <p>在“订阅”中可打开频道、单独刷新、暂停或移除来源。批量刷新最多同时处理三路，失败不会清空旧内容。</p>
-              <p>Bilibili 目前以站内链接模式保存，不自动抓取动态；如有公开 RSS 转换地址，可按普通 RSS 添加。</p>
+              <p>Bilibili、微信公众号、知乎、小红书、抖音、快手、微博、小宇宙、今日头条、百家号、豆瓣和喜马拉雅以站内链接模式保存，不自动抓取动态；如有公开 RSS 转换地址，可按普通 RSS 添加。</p>
             </div>
           </div>
           <div class="callout warning"><span aria-hidden="true">!</span><div><strong>无法识别网页？</strong><p>优先粘贴网站公开的 RSS/Atom 地址。普通网页只有声明了公开 Feed 时才能自动发现。</p></div></div>
@@ -210,7 +210,7 @@ npm run dev</code></pre>
         <section class="doc-section section-block" id="troubleshooting" data-doc-section data-keywords="问题 FAQ 错误 刷新 订阅 丢失 导入 网络">
           <div class="section-heading compact"><span class="section-number">07</span><div><h2>常见问题</h2></div></div>
           <details><summary>订阅刷新失败会丢掉之前的内容吗？</summary><p>不会。来源请求或解析失败时会保留已有内容，并给出可重试提示。</p></details>
-          <details><summary>为什么 Bilibili 没有内容预览？</summary><p>当前版本避免依赖不稳定的匿名接口，因此只保存创作者或视频链接。公开的 RSS 转换地址仍可正常预览。</p></details>
+          <details><summary>为什么中文内容平台没有内容预览？</summary><p>当前版本避免依赖不稳定的匿名接口，因此只保存公开的主页或内容链接。公开的 RSS 转换地址仍可正常预览。</p></details>
           <details><summary>为什么有些页面无法在主显示区打开？</summary><p>部分平台通过 X-Frame-Options 或 CSP 禁止任何第三方站点内嵌。此时可在当前页打开来源，使用浏览器返回后，查看记录仍会保留。</p></details>
           <details><summary>为什么我在内嵌的 B站页面登录后仍显示未登录？</summary><p>浏览器可能隔离或阻止了 iframe 的第三方 Cookie。自选已经为支持 Storage Access API 的来源开放所需权限，但该权限必须由 B站页面自己请求，父页面无法代为调用。请使用查看器中的“在当前页打开并登录 B站”进入第一方登录环境；浏览器返回后，本地阅读记录仍会保留。</p></details>
           <details><summary>自选会保存我的平台密码吗？</summary><p>不会。登录表单、Cookie 与会话都由来源平台和浏览器处理；自选只保存非敏感的平台地址与最近打开时间。</p></details>
@@ -282,7 +282,7 @@ npm run dev</code></pre>
 }</code></pre>
           </div>
           <h3>成功响应</h3>
-          <p><code>mode: "live"</code> 返回规范化的来源、条目与抓取时间；Bilibili 返回 <code>mode: "link-only"</code>、空条目列表和 <code>BILIBILI_LINK_ONLY</code> 警告。</p>
+          <p><code>mode: "live"</code> 返回规范化的来源、条目与抓取时间；受支持的中文内容平台返回 <code>mode: "link-only"</code>、平台标识、原始链接、空条目列表和明确警告。Bilibili 继续返回兼容的 <code>BILIBILI_LINK_ONLY</code> 警告。</p>
           <h3>失败响应</h3>
           <table>
             <thead><tr><th>错误码</th><th>含义</th><th>可重试</th></tr></thead>

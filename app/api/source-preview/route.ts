@@ -420,32 +420,119 @@ function discoverFeedUrl(html: string, pageUrl: string) {
   return null;
 }
 
-function bilibiliPreview(url: URL) {
-  const isBilibili =
-    url.hostname === "b23.tv" || url.hostname.endsWith("bilibili.com");
-  if (!isBilibili) return null;
+const LINK_PLATFORMS = [
+  {
+    kind: "bilibili",
+    label: "B 站",
+    hostnames: ["bilibili.com", "b23.tv"],
+    description: "B站公开页面",
+  },
+  {
+    kind: "wechat",
+    label: "微信公众号",
+    hostnames: ["mp.weixin.qq.com"],
+    description: "微信公众号文章",
+  },
+  {
+    kind: "zhihu",
+    label: "知乎",
+    hostnames: ["zhihu.com"],
+    description: "知乎创作者或内容页面",
+  },
+  {
+    kind: "xiaohongshu",
+    label: "小红书",
+    hostnames: ["xiaohongshu.com", "xhslink.com"],
+    description: "小红书创作者或内容页面",
+  },
+  {
+    kind: "douyin",
+    label: "抖音",
+    hostnames: ["douyin.com", "iesdouyin.com"],
+    description: "抖音创作者或内容页面",
+  },
+  {
+    kind: "kuaishou",
+    label: "快手",
+    hostnames: ["kuaishou.com", "gifshow.com"],
+    description: "快手创作者或内容页面",
+  },
+  {
+    kind: "weibo",
+    label: "微博",
+    hostnames: ["weibo.com", "weibo.cn"],
+    description: "微博用户或内容页面",
+  },
+  {
+    kind: "xiaoyuzhou",
+    label: "小宇宙",
+    hostnames: ["xiaoyuzhoufm.com"],
+    description: "小宇宙播客或单集页面",
+  },
+  {
+    kind: "toutiao",
+    label: "今日头条",
+    hostnames: ["toutiao.com"],
+    description: "今日头条创作者或内容页面",
+  },
+  {
+    kind: "baijiahao",
+    label: "百家号",
+    hostnames: ["baijiahao.baidu.com"],
+    description: "百家号创作者或内容页面",
+  },
+  {
+    kind: "douban",
+    label: "豆瓣",
+    hostnames: ["douban.com"],
+    description: "豆瓣用户或内容页面",
+  },
+  {
+    kind: "ximalaya",
+    label: "喜马拉雅",
+    hostnames: ["ximalaya.com"],
+    description: "喜马拉雅主播、专辑或单集页面",
+  },
+] as const;
+
+function hostnameMatches(hostname: string, expected: string) {
+  return hostname === expected || hostname.endsWith(`.${expected}`);
+}
+
+function platformLinkPreview(url: URL) {
+  const platform = LINK_PLATFORMS.find((candidate) =>
+    candidate.hostnames.some((hostname) => hostnameMatches(url.hostname, hostname)),
+  );
+  if (!platform) return null;
 
   const mid =
-    url.hostname === "space.bilibili.com"
+    platform.kind === "bilibili" && url.hostname === "space.bilibili.com"
       ? url.pathname.match(/^\/(\d+)/)?.[1]
       : undefined;
-  const isVideo = /\/video\//.test(url.pathname);
+  const isVideo = platform.kind === "bilibili" && /\/video\//.test(url.pathname);
+  const isBilibili = platform.kind === "bilibili";
 
   return {
     ok: true,
     mode: "link-only" as const,
     source: {
-      kind: "bilibili" as const,
-      title: mid ? `B站创作者 ${mid}` : isVideo ? "B站视频来源" : "B站订阅",
+      kind: platform.kind,
+      platformLabel: platform.label,
+      title: isBilibili
+        ? mid
+          ? `B站创作者 ${mid}`
+          : isVideo
+            ? "B站视频来源"
+            : "B站订阅"
+        : `${platform.label}来源`,
       mid,
       profileUrl: url.href,
-      description: "链接模式：保留这个来源，并在自选的主显示区查看 B站页面。",
+      description: `链接模式：保留这个${platform.description}，并在自选的主显示区查看。`,
     },
     items: [],
     warning: {
-      code: "BILIBILI_LINK_ONLY",
-      message:
-        "B站暂不提供稳定的匿名订阅接口，因此以站内链接模式保存；如果你有 RSS 转换地址，也可以直接粘贴以获取预览。",
+      code: isBilibili ? "BILIBILI_LINK_ONLY" : "PLATFORM_LINK_ONLY",
+      message: `${platform.label}暂不使用非公开订阅接口，因此以站内链接模式保存；如果你有公开 RSS 地址，也可以直接粘贴以获取预览。`,
     },
   };
 }
@@ -458,8 +545,8 @@ export async function POST(request: Request) {
     }
 
     const initialUrl = parsePublicUrl(payload.url.trim());
-    const bilibili = bilibiliPreview(initialUrl);
-    if (bilibili) return json(bilibili);
+    const platformLink = platformLinkPreview(initialUrl);
+    if (platformLink) return json(platformLink);
 
     const requestedLimit = Number(payload.limit);
     const limit = Number.isFinite(requestedLimit)

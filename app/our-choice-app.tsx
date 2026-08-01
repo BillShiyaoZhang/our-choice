@@ -56,6 +56,7 @@ import {
   type Collection,
   type ContentItem,
   type ContentType,
+  type Platform,
   type PlatformSession,
   type Source,
   type SuggestedCollection,
@@ -85,7 +86,8 @@ interface PreviewSuccess {
   ok: true;
   mode: "live" | "link-only";
   source: {
-    kind: "rss" | "bilibili";
+    kind: Platform;
+    platformLabel?: string;
     title: string;
     description?: string;
     feedUrl?: string;
@@ -744,7 +746,7 @@ export function OurChoiceApp() {
       return;
     }
     if (!candidates.length) {
-      showToast({ message: "暂无可自动刷新的 RSS 来源；B站订阅仍可直接前往查看" });
+      showToast({ message: "暂无可自动刷新的 RSS 来源；链接订阅仍可直接前往查看" });
       return;
     }
 
@@ -1254,8 +1256,8 @@ export function OurChoiceApp() {
               name: name.trim() || preview.source.title,
               description:
                 preview.source.description ||
-                (preview.mode === "live" ? "通过 RSS 获取的新内容" : "B站链接订阅"),
-              platform: preview.source.kind === "bilibili" ? "bilibili" : "rss",
+                (preview.mode === "live" ? "通过 RSS 获取的新内容" : "平台链接订阅"),
+              platform: preview.mode === "live" ? "rss" : preview.source.kind,
               url:
                 preview.source.siteUrl ||
                 preview.source.profileUrl ||
@@ -1428,6 +1430,9 @@ export function OurChoiceApp() {
 function EmbeddedViewer({ viewer, onBack }: { viewer: ViewerState; onBack: () => void }) {
   const [reloadKey, setReloadKey] = useState(0);
   const isBilibili = viewer.platform === platformLabels.bilibili;
+  const isPlatformSource = ![platformLabels.rss, platformLabels.podcast, platformLabels.web].includes(
+    viewer.platform,
+  );
 
   return (
     <section className="embedded-viewer" aria-labelledby="embedded-viewer-title">
@@ -1448,10 +1453,10 @@ function EmbeddedViewer({ viewer, onBack }: { viewer: ViewerState; onBack: () =>
             )}
           </div>
           <h1 id="embedded-viewer-title">{viewer.title}</h1>
-          <p className={isBilibili ? "viewer-session-message" : undefined}>
+          <p className={isPlatformSource ? "viewer-session-message" : undefined}>
             <ShieldCheck size={14} />
-            {isBilibili
-              ? "内嵌登录受第三方 Cookie 限制；若仍显示未登录，请使用右侧的当前页登录入口。"
+            {isPlatformSource
+              ? `${viewer.platform} 的内嵌登录受第三方 Cookie 限制；若仍显示未登录，请使用右侧的当前页登录入口。`
               : `${viewer.platform} 页面在主显示区内加载；内嵌登录取决于浏览器和来源平台的 Cookie 策略。`}
           </p>
         </div>
@@ -1460,10 +1465,14 @@ function EmbeddedViewer({ viewer, onBack }: { viewer: ViewerState; onBack: () =>
             <RefreshCw size={16} /> 重新加载
           </button>
           <a
-            className={isBilibili ? "secondary-button viewer-login-fallback" : "quiet-button"}
+            className={isPlatformSource ? "secondary-button viewer-login-fallback" : "quiet-button"}
             href={viewer.url}
           >
-            {isBilibili ? "在当前页打开并登录 B站" : "无法嵌入时在当前页打开"}
+            {isBilibili
+              ? "在当前页打开并登录 B站"
+              : isPlatformSource
+                ? `在当前页打开并登录${viewer.platform}`
+                : "无法嵌入时在当前页打开"}
             <ExternalLink size={15} />
           </a>
         </div>
@@ -1990,14 +1999,14 @@ function SubscriptionsView({
           </section>
 
           <p className="list-footnote">
-            <LockKeyhole size={14} /> RSS 由本地站点按需读取；B站来源在主显示区以链接模式打开。
+            <LockKeyhole size={14} /> RSS 由本地站点按需读取；中文内容平台在主显示区以链接模式打开。
           </p>
         </>
       ) : (
         <EmptyState
           icon={Rss}
           title="还没有订阅"
-          description="粘贴一个 RSS 或 B站主页，从你已经信任的来源开始。"
+          description="粘贴一个 RSS 或中文内容平台链接，从你已经信任的来源开始。"
           actionLabel="添加第一个订阅"
           onAction={onAdd}
         />
@@ -2404,7 +2413,7 @@ function AddSubscriptionModal({
     setPreview(null);
     const trimmed = url.trim();
     if (!trimmed) {
-      setError("请先粘贴一个 B站主页、网站或 RSS 地址。");
+      setError("请先粘贴一个中文内容平台、网站或 RSS 地址。");
       return;
     }
     const duplicate = existingSources.find(
@@ -2448,7 +2457,7 @@ function AddSubscriptionModal({
             onKeyDown={(event) => {
               if (event.key === "Enter") void identify();
             }}
-            placeholder="粘贴 B站主页、网站或 RSS 地址"
+            placeholder="粘贴中文内容平台、网站或 RSS 地址"
             autoComplete="url"
             inputMode="url"
           />
@@ -2465,8 +2474,8 @@ function AddSubscriptionModal({
             <div>
               <span className="source-support-icon bilibili-mark">B</span>
               <div>
-                <strong>B站主页</strong>
-                <p>以链接模式保存，在本站主区域打开</p>
+                <strong>中文内容平台</strong>
+                <p>B站、微信、知乎、小红书、抖音、快手、微博、头条、豆瓣及音频平台等</p>
               </div>
             </div>
             <div>
@@ -2493,7 +2502,9 @@ function AddSubscriptionModal({
           <div className="source-preview">
             <div className="preview-success-line">
               <span><Check size={15} /></span>
-              {preview.mode === "live" ? "已识别可同步的订阅源" : "已识别 B站链接"}
+              {preview.mode === "live"
+                ? "已识别可同步的订阅源"
+                : `已识别${preview.source.platformLabel ?? "平台"}链接`}
             </div>
             <div className="preview-source-row">
               <span className={`source-avatar tone-${TONES[sourceCount % TONES.length]}`}>

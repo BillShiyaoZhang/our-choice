@@ -123,6 +123,46 @@ test("Bilibili creator pages use an explicit link-only mode", async () => {
   assert.equal(payload.warning.code, "BILIBILI_LINK_ONLY");
 });
 
+test("mainstream Chinese content platforms use explicit link-only previews", async () => {
+  const app = await worker();
+  const cases = [
+    ["https://mp.weixin.qq.com/s/example", "wechat", "微信公众号"],
+    ["https://www.zhihu.com/people/example", "zhihu", "知乎"],
+    ["https://www.xiaohongshu.com/user/profile/example", "xiaohongshu", "小红书"],
+    ["https://www.douyin.com/user/example", "douyin", "抖音"],
+    ["https://www.kuaishou.com/profile/example", "kuaishou", "快手"],
+    ["https://weibo.com/u/example", "weibo", "微博"],
+    ["https://www.xiaoyuzhoufm.com/podcast/example", "xiaoyuzhou", "小宇宙"],
+    ["https://www.toutiao.com/c/user/example", "toutiao", "今日头条"],
+    ["https://baijiahao.baidu.com/s?id=example", "baijiahao", "百家号"],
+    ["https://www.douban.com/people/example", "douban", "豆瓣"],
+    ["https://www.ximalaya.com/zhubo/example", "ximalaya", "喜马拉雅"],
+  ];
+
+  for (const [url, platform, label] of cases) {
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env(),
+      context,
+    );
+
+    assert.equal(response.status, 200, `${label} should be recognized`);
+    const payload = await response.json();
+    assert.equal(payload.ok, true);
+    assert.equal(payload.mode, "link-only");
+    assert.equal(payload.source.kind, platform);
+    assert.equal(payload.source.platformLabel, label);
+    assert.equal(payload.source.profileUrl, url);
+    assert.deepEqual(payload.items, []);
+    assert.equal(payload.warning.code, "PLATFORM_LINK_ONLY");
+    assert.match(payload.warning.message, new RegExp(label));
+  }
+});
+
 test("the project has no OpenAI Sites deployment configuration", async () => {
   const viteConfig = await readFile(new URL("vite.config.ts", templateRoot), "utf8");
   await assert.rejects(

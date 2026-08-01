@@ -26,6 +26,8 @@ test("ships a self-contained user and developer documentation site", async () =>
   assert.match(html, /our-choice:state:v1/);
   assert.match(html, /\/api\/source-preview/);
   assert.match(html, /Bilibili/);
+  assert.match(html, /微信公众号、知乎、小红书、抖音、快手、微博、小宇宙/);
+  assert.match(html, /今日头条、百家号、豆瓣和喜马拉雅/);
   assert.match(css, /prefers-reduced-motion/);
   assert.match(script, /data-doc-search/);
   assert.match(script, /navigator\.clipboard/);

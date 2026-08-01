@@ -2,7 +2,22 @@ export type View = "today" | "discover" | "collections" | "subscriptions";
 
 export type ContentType = "video" | "podcast" | "article";
 
-export type Platform = "bilibili" | "rss" | "podcast" | "web";
+export type Platform =
+  | "bilibili"
+  | "wechat"
+  | "zhihu"
+  | "xiaohongshu"
+  | "douyin"
+  | "kuaishou"
+  | "weibo"
+  | "xiaoyuzhou"
+  | "toutiao"
+  | "baijiahao"
+  | "douban"
+  | "ximalaya"
+  | "rss"
+  | "podcast"
+  | "web";
 
 export type VisualTone =
   | "forest"
@@ -424,6 +439,17 @@ export const contentTypeLabels: Record<ContentType, string> = {
 
 export const platformLabels: Record<Platform, string> = {
   bilibili: "B 站",
+  wechat: "微信公众号",
+  zhihu: "知乎",
+  xiaohongshu: "小红书",
+  douyin: "抖音",
+  kuaishou: "快手",
+  weibo: "微博",
+  xiaoyuzhou: "小宇宙",
+  toutiao: "今日头条",
+  baijiahao: "百家号",
+  douban: "豆瓣",
+  ximalaya: "喜马拉雅",
   rss: "RSS",
   podcast: "播客",
   web: "网页",
