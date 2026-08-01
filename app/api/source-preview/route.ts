@@ -2,7 +2,26 @@ import { parse as parseDomain } from "tldts";
 
 const MAX_RESPONSE_BYTES = 1_000_000;
 const REQUEST_TIMEOUT_MS = 7_000;
+const RSSHUB_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 3;
+const TRACKING_QUERY_KEYS = new Set([
+  "from",
+  "share_medium",
+  "share_plat",
+  "share_session_id",
+  "share_source",
+  "share_tag",
+  "spm",
+  "spm_id_from",
+  "timestamp",
+  "unique_k",
+]);
+
+const SHORT_LINK_TARGETS: Record<string, string[]> = {
+  "b23.tv": ["bilibili.com"],
+  "xhslink.com": ["xiaohongshu.com"],
+  "v.douyin.com": ["douyin.com", "iesdouyin.com"],
+};
 
 type PreviewErrorCode =
   | "INVALID_URL"
@@ -10,7 +29,9 @@ type PreviewErrorCode =
   | "UPSTREAM_TIMEOUT"
   | "UPSTREAM_HTTP"
   | "FEED_TOO_LARGE"
-  | "PARSE_FAILED";
+  | "PARSE_FAILED"
+  | "INVALID_SELECTION"
+  | "RSSHUB_NOT_CONFIGURED";
 
 class PreviewError extends Error {
   constructor(
@@ -85,6 +106,70 @@ function parsePublicUrl(raw: string, base?: string) {
   }
 
   return url;
+}
+
+function inputUrl(raw: string) {
+  const trimmed = raw.trim();
+  try {
+    return parsePublicUrl(trimmed);
+  } catch (directError) {
+    const matches = trimmed.match(/https?:\/\/[^\s<>"']+/gi) ?? [];
+    if (matches.length !== 1) throw directError;
+    const extracted = matches[0]!.replace(/[),.;!?，。；！？）】》]+$/u, "");
+    return parsePublicUrl(extracted);
+  }
+}
+
+function normalizePublicUrl(url: URL) {
+  const normalized = new URL(url);
+  if (normalized.pathname.length > 1) {
+    normalized.pathname = normalized.pathname.replace(/\/+$/, "");
+  }
+  for (const key of [...normalized.searchParams.keys()]) {
+    if (key.startsWith("utm_") || TRACKING_QUERY_KEYS.has(key)) {
+      normalized.searchParams.delete(key);
+    }
+  }
+  return normalized;
+}
+
+async function resolveAllowedShortLink(initialUrl: URL) {
+  const allowedTargets = SHORT_LINK_TARGETS[initialUrl.hostname];
+  if (!allowedTargets) return initialUrl;
+
+  let currentUrl = initialUrl;
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
+    let response: Response;
+    try {
+      response = await fetch(currentUrl, {
+        redirect: "manual",
+        headers: { "User-Agent": "OurChoice/1.0 (+short-link resolver)" },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      return initialUrl;
+    }
+
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
+      await response.body?.cancel();
+      return currentUrl;
+    }
+    const location = response.headers.get("location");
+    await response.body?.cancel();
+    if (!location || redirectCount === MAX_REDIRECTS) return initialUrl;
+
+    const redirected = parsePublicUrl(location, currentUrl.href);
+    if (
+      !allowedTargets.some((hostname) =>
+        redirected.hostname === hostname || redirected.hostname.endsWith(`.${hostname}`),
+      )
+    ) {
+      return initialUrl;
+    }
+    currentUrl = redirected;
+    if (!SHORT_LINK_TARGETS[currentUrl.hostname]) return currentUrl;
+  }
+  return initialUrl;
 }
 
 async function fetchWithLimits(initialUrl: URL) {
@@ -512,15 +597,29 @@ interface RadarRule {
 }
 
 interface RadarMatch {
+  id: string;
   route: string;
   title?: string;
   docs?: string;
+  score: number;
 }
+
+interface PreviewOption {
+  id: string;
+  title: string;
+  description: string;
+  docsUrl?: string;
+}
+
+type ManualSubscription =
+  | { kind: "wechat-uread"; userid: string }
+  | { kind: "wechat-mp"; biz: string; hid: string; cid?: string }
+  | { kind: "wechat-wechat2rss"; id: string };
 
 type RssHubOutcome =
   | { kind: "success"; payload: unknown }
   | { kind: "no-route" }
-  | { kind: "failed" };
+  | { kind: "failed"; message: string; match?: RadarMatch };
 
 function hostnameMatches(hostname: string, expected: string) {
   return hostname === expected || hostname.endsWith(`.${expected}`);
@@ -530,6 +629,72 @@ function findLinkPlatform(url: URL) {
   return LINK_PLATFORMS.find((candidate) =>
     candidate.hostnames.some((hostname) => hostnameMatches(url.hostname, hostname)),
   );
+}
+
+function normalizePlatformUrl(url: URL) {
+  const normalized = normalizePublicUrl(url);
+  let preferredTitle: string | undefined;
+
+  if (normalized.hostname === "space.bilibili.com") {
+    const tab = normalized.pathname.match(
+      /^\/(\d+)\/(video|dynamic|article|favlist)$/,
+    );
+    if (tab) {
+      normalized.pathname = `/${tab[1]}`;
+      preferredTitle = {
+        video: "UP 主投稿",
+        dynamic: "UP 主动态",
+        article: "UP 主图文",
+        favlist: "UP 主默认收藏夹",
+      }[tab[2]!];
+    }
+  }
+
+  return { url: normalized, preferredTitle };
+}
+
+function platformCredentialHint(platform?: LinkPlatform) {
+  if (!platform) return undefined;
+  const hints: Partial<Record<LinkPlatform["kind"], string>> = {
+    bilibili: "部署者可配置 BILIBILI_COOKIE_1 后重试。",
+    zhihu: "部署者可配置 ZHIHU_COOKIES 后重试。",
+    xiaohongshu: "部署者可配置 XIAOHONGSHU_COOKIE 后重试。",
+    weibo: "部署者可配置 WEIBO_COOKIES 后重试。",
+    ximalaya: "付费专辑需要部署者配置 XIMALAYA_TOKEN。",
+  };
+  return hints[platform.kind];
+}
+
+function subscriptionScopeHint(url: URL, platform: LinkPlatform) {
+  const path = url.pathname;
+  if (platform.kind === "bilibili" && /^\/video\//.test(path)) {
+    return "单个视频不是持续订阅范围，请改用这个作者的 UP 主主页。";
+  }
+  if (platform.kind === "wechat" && /^\/s\//.test(path)) {
+    return "普通文章不能推导公众号历史，请使用微信公众号专用参数入口。";
+  }
+  if (platform.kind === "xiaohongshu" && /^\/(explore|discovery\/item)\//.test(path)) {
+    return "单篇笔记不能持续更新，请改用作者的公开用户主页。";
+  }
+  if (platform.kind === "douyin" && /^\/video\//.test(path)) {
+    return "单个视频不能持续更新，请改用博主主页。";
+  }
+  if (platform.kind === "kuaishou" && /^\/short-video\//.test(path)) {
+    return "单个视频不能持续更新，请改用 Profile 主页。";
+  }
+  if (platform.kind === "weibo" && !/^\/u\/[^/]+$/.test(path)) {
+    return "单条微博不能持续更新，请改用 /u/{uid} 博主主页。";
+  }
+  if (platform.kind === "toutiao" && /^\/(article|video)\//.test(path)) {
+    return "单篇内容不能持续更新，请改用包含用户 token 的主页。";
+  }
+  if (platform.kind === "douban" && /^\/subject\//.test(path)) {
+    return "单个条目不是更新流；目前可订阅豆瓣小组或榜单页面。";
+  }
+  if (platform.kind === "ximalaya" && /^\/sound\//.test(path)) {
+    return "单集不能持续更新，请改用所属专辑页面。";
+  }
+  return undefined;
 }
 
 function configuredRssHub(): RssHubConfig | null {
@@ -586,7 +751,7 @@ async function fetchRssHubResource(
           Accept: accept,
           "User-Agent": "OurChoice/1.0 (+RSSHub integration)",
         },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(RSSHUB_REQUEST_TIMEOUT_MS),
       });
     } catch (error) {
       if (error instanceof Error && error.name === "TimeoutError") {
@@ -777,21 +942,60 @@ function fillRadarTarget(target: string, params: Record<string, string>) {
   return route.replace(/\/{2,}/g, "/");
 }
 
+function radarPatternScore(pattern: string) {
+  return pattern
+    .replace(/:([A-Za-z_][A-Za-z0-9_]*)([?*+]?)/g, "")
+    .replace(/\*/g, "").length;
+}
+
 function matchRadarRule(rule: RadarRule, url: URL): RadarMatch | null {
   for (const source of rule.source) {
     const params = matchRadarSource(source, url);
     if (!params) continue;
     const route = fillRadarTarget(rule.target, params);
-    if (route) return { route, title: rule.title, docs: rule.docs };
+    if (route) {
+      return {
+        id: `radar:${route}`,
+        route,
+        title: rule.title,
+        docs: rule.docs,
+        score: radarPatternScore(source),
+      };
+    }
   }
   return null;
 }
 
-async function discoverRssHubRoute(
+function explicitRssHubMatches(url: URL, platform?: LinkPlatform): RadarMatch[] {
+  if (platform?.kind !== "ximalaya") return [];
+  const match = url.pathname.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/(\d+)$/);
+  if (!match || match[1] === "sound") return [];
+  const type = match[1]!;
+  const id = match[2]!;
+  return [
+    {
+      id: "manual:ximalaya-album",
+      route: `/ximalaya/${type}/${id}`,
+      title: "喜马拉雅专辑",
+      docs: "https://docs.rsshub.app/routes/multimedia#xi-ma-la-ya",
+      score: 10_000,
+    },
+  ];
+}
+
+function dedupeRadarMatches(matches: RadarMatch[]) {
+  return [...new Map(matches.map((match) => [match.id, match])).values()];
+}
+
+async function discoverRssHubRoutes(
   config: RssHubConfig,
   url: URL,
   platform?: LinkPlatform,
+  preferredTitle?: string,
 ) {
+  const matches = explicitRssHubMatches(url, platform);
+  if (matches.length > 0) return matches;
+
   for (const domain of radarDomainCandidates(url, platform)) {
     const response = await fetchRssHubResource(
       config,
@@ -808,10 +1012,17 @@ async function discoverRssHubRoute(
     const rules = radarRulesForHost(payload, url.hostname, domain);
     for (const rule of rules) {
       const match = matchRadarRule(rule, url);
-      if (match) return match;
+      if (match) matches.push(match);
     }
   }
-  return null;
+
+  const unique = dedupeRadarMatches(matches);
+  if (preferredTitle) {
+    const preferred = unique.filter((match) => match.title === preferredTitle);
+    if (preferred.length > 0) return preferred;
+  }
+  const maxScore = Math.max(...unique.map((match) => match.score), -1);
+  return unique.filter((match) => match.score === maxScore);
 }
 
 function isSyntheticRssHubUrl(raw: string | undefined) {
@@ -827,12 +1038,11 @@ async function tryRssHubPreview(
   config: RssHubConfig,
   initialUrl: URL,
   limit: number,
+  match: RadarMatch,
   platform?: LinkPlatform,
+  manualSubscription?: ManualSubscription,
 ): Promise<RssHubOutcome> {
   try {
-    const match = await discoverRssHubRoute(config, initialUrl, platform);
-    if (!match) return { kind: "no-route" };
-
     const feed = await fetchRssHubResource(
       config,
       match.route,
@@ -844,6 +1054,11 @@ async function tryRssHubPreview(
       limit,
     );
     const safeSource = { ...parsed.source, feedUrl: undefined };
+    const parsedTitle = safeSource.title?.trim();
+    const title =
+      !parsedTitle || /^(undefined|null)(?:\b|\s)/i.test(parsedTitle)
+        ? `${platform?.label ?? "RSSHub"} · ${match.title ?? "订阅"}`
+        : parsedTitle;
     const items = parsed.items
       .filter((item) => !isSyntheticRssHubUrl(item.url))
       .map((item) => ({
@@ -863,6 +1078,7 @@ async function tryRssHubPreview(
         mode: "live",
         source: {
           ...safeSource,
+          title,
           kind: platform?.kind ?? "rss",
           platformLabel: platform?.label,
           siteUrl: isSyntheticRssHubUrl(safeSource.siteUrl)
@@ -872,24 +1088,143 @@ async function tryRssHubPreview(
             ? undefined
             : safeSource.imageUrl,
           provider: "rsshub",
-          refreshUrl: initialUrl.href,
+          refreshUrl: manualSubscription ? undefined : initialUrl.href,
           rsshubRoute: match.route,
+          rsshubSelection: match.id,
           routeTitle: match.title,
           docsUrl: match.docs,
+          manualSubscription,
         },
         items,
         fetchedAt: new Date().toISOString(),
       },
     };
-  } catch {
-    return { kind: "failed" };
+  } catch (error) {
+    return {
+      kind: "failed",
+      match,
+      message:
+        error instanceof PreviewError
+          ? error.message
+          : "RSSHub 路由暂时无法生成订阅内容。",
+    };
   }
+}
+
+function previewOptions(matches: RadarMatch[]): PreviewOption[] {
+  return matches.map((match) => ({
+    id: match.id,
+    title: match.title ?? "RSSHub 订阅",
+    description: `订阅范围：${match.title ?? match.route}`,
+    docsUrl: match.docs,
+  }));
+}
+
+function selectRssHubPreview(
+  url: URL,
+  platform: LinkPlatform | undefined,
+  matches: RadarMatch[],
+) {
+  return {
+    ok: true,
+    mode: "select" as const,
+    source: {
+      kind: platform?.kind ?? "rss",
+      platformLabel: platform?.label,
+      title: platform ? `${platform.label}订阅` : "选择 RSSHub 订阅",
+      description: "这个页面可以生成多种订阅，请选择你真正想持续接收的内容。",
+      profileUrl: url.href,
+      refreshUrl: url.href,
+      provider: "rsshub" as const,
+    },
+    options: previewOptions(matches),
+    items: [],
+  };
+}
+
+function requiredManualValue(value: unknown, label: string, pattern: RegExp) {
+  if (typeof value !== "string" || !pattern.test(value.trim())) {
+    throw new PreviewError(
+      "INVALID_SELECTION",
+      `请输入有效的${label}。`,
+      false,
+      400,
+    );
+  }
+  return value.trim();
+}
+
+function manualRssHubMatch(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new PreviewError("INVALID_SELECTION", "请选择微信公众号订阅方式。", false, 400);
+  }
+  const input = value as Record<string, unknown>;
+  const kind = input.kind;
+  if (kind === "wechat-uread") {
+    const userid = requiredManualValue(input.userid, "公众号 ID", /^[A-Za-z0-9_-]{1,128}$/);
+    const manual: ManualSubscription = { kind, userid };
+    return {
+      manual,
+      url: new URL("https://mp.weixin.qq.com/"),
+      platform: LINK_PLATFORMS.find((candidate) => candidate.kind === "wechat")!,
+      match: {
+        id: `manual:${kind}`,
+        route: `/wechat/uread/${encodeURIComponent(userid)}`,
+        title: "公众号（优读来源）",
+        docs: "https://docs.rsshub.app/routes/new-media#wei-xin",
+        score: 10_000,
+      } satisfies RadarMatch,
+    };
+  }
+  if (kind === "wechat-mp") {
+    const biz = requiredManualValue(input.biz, "公众号 Biz", /^[A-Za-z0-9+/=_-]{4,256}$/);
+    const hid = requiredManualValue(input.hid, "栏目 HID", /^\d{1,12}$/);
+    const cid =
+      input.cid === undefined || input.cid === ""
+        ? undefined
+        : requiredManualValue(input.cid, "栏目 CID", /^\d{1,12}$/);
+    const manual: ManualSubscription = { kind, biz, hid, cid };
+    const route = `/wechat/mp/homepage/${encodeURIComponent(biz)}/${encodeURIComponent(hid)}${
+      cid ? `/${encodeURIComponent(cid)}` : ""
+    }`;
+    return {
+      manual,
+      url: new URL("https://mp.weixin.qq.com/"),
+      platform: LINK_PLATFORMS.find((candidate) => candidate.kind === "wechat")!,
+      match: {
+        id: `manual:${kind}`,
+        route,
+        title: "公众号栏目",
+        docs: "https://docs.rsshub.app/routes/new-media#wei-xin",
+        score: 10_000,
+      } satisfies RadarMatch,
+    };
+  }
+  if (kind === "wechat-wechat2rss") {
+    const id = requiredManualValue(input.id, "Wechat2RSS ID", /^[A-Fa-f0-9]{16,128}$/);
+    const manual: ManualSubscription = { kind, id };
+    return {
+      manual,
+      url: new URL("https://mp.weixin.qq.com/"),
+      platform: LINK_PLATFORMS.find((candidate) => candidate.kind === "wechat")!,
+      match: {
+        id: `manual:${kind}`,
+        route: `/wechat/wechat2rss/${encodeURIComponent(id)}`,
+        title: "公众号（Wechat2RSS 来源）",
+        docs: "https://docs.rsshub.app/routes/new-media#wei-xin",
+        score: 10_000,
+      } satisfies RadarMatch,
+    };
+  }
+  throw new PreviewError("INVALID_SELECTION", "不支持这个微信公众号订阅方式。", false, 400);
 }
 
 function platformLinkPreview(
   url: URL,
   platform = findLinkPlatform(url),
   rssHubFallback?: "no-route" | "failed",
+  matches: RadarMatch[] = [],
+  attempted?: RadarMatch,
 ) {
   if (!platform) return null;
 
@@ -918,50 +1253,181 @@ function platformLinkPreview(
       description: `链接模式：保留这个${platform.description}，并在自选的主显示区查看。`,
     },
     items: [],
+    options: previewOptions(matches),
     warning:
       rssHubFallback === "failed"
         ? {
-            code: "RSSHUB_FALLBACK",
-            message: `RSSHub 暂时无法转换这个${platform.label}来源，已安全降级为站内链接；稍后可以重新识别。`,
+            code: attempted ? "RSSHUB_ROUTE_FAILED" : "RSSHUB_FALLBACK",
+            message: attempted
+              ? `RSSHub 路由${attempted.title ? `「${attempted.title}」` : ""}暂时无法生成内容，已保留链接。${platformCredentialHint(platform) ?? "可以稍后重试或改选其他订阅范围。"}`
+              : `RSSHub 暂时无法转换这个${platform.label}来源，已安全降级为站内链接；稍后可以重新识别。`,
           }
         : rssHubFallback === "no-route"
           ? {
               code: "RSSHUB_NO_ROUTE",
-              message: `当前 RSSHub Radar 规则没有匹配这个${platform.label}地址，因此以站内链接模式保存。`,
+              message:
+                subscriptionScopeHint(url, platform) ??
+                `当前 RSSHub Radar 规则没有匹配这个${platform.label}地址，因此以站内链接模式保存。`,
             }
           : {
               code: isBilibili ? "BILIBILI_LINK_ONLY" : "PLATFORM_LINK_ONLY",
-              message: `${platform.label}暂不使用非公开订阅接口，因此以站内链接模式保存；如果你有公开 RSS 地址，也可以直接粘贴以获取预览。`,
+              message:
+                subscriptionScopeHint(url, platform) ??
+                `${platform.label}暂不使用非公开订阅接口，因此以站内链接模式保存；如果你有公开 RSS 地址，也可以直接粘贴以获取预览。`,
             },
+  };
+}
+
+async function rssHubCandidateOutcome(
+  config: RssHubConfig,
+  url: URL,
+  limit: number,
+  platform: LinkPlatform | undefined,
+  selection: string | undefined,
+  preferredTitle?: string,
+) {
+  let matches: RadarMatch[];
+  try {
+    matches = await discoverRssHubRoutes(
+      config,
+      url,
+      platform,
+      preferredTitle,
+    );
+  } catch {
+    return { outcome: { kind: "failed", message: "暂时无法连接 RSSHub。" } as RssHubOutcome, matches: [] };
+  }
+  if (matches.length === 0) {
+    return { outcome: { kind: "no-route" } as RssHubOutcome, matches };
+  }
+
+  if (!selection && matches.length > 1) {
+    return {
+      outcome: {
+        kind: "success",
+        payload: selectRssHubPreview(url, platform, matches),
+      } as RssHubOutcome,
+      matches,
+    };
+  }
+
+  const match = selection
+    ? matches.find((candidate) => candidate.id === selection)
+    : matches[0];
+  if (!match) {
+    throw new PreviewError(
+      "INVALID_SELECTION",
+      "这个订阅选项已经变化，请重新识别来源后再选择。",
+      false,
+      409,
+    );
+  }
+  return {
+    outcome: await tryRssHubPreview(config, url, limit, match, platform),
+    matches,
   };
 }
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as { url?: unknown; limit?: unknown };
-    if (typeof payload.url !== "string" || payload.url.length > 2_048) {
-      throw new PreviewError("INVALID_URL", "请输入一个有效的订阅地址。", false, 400);
-    }
-
-    const initialUrl = parsePublicUrl(payload.url.trim());
-    const platform = findLinkPlatform(initialUrl);
-
+    const payload = (await request.json()) as {
+      url?: unknown;
+      limit?: unknown;
+      selection?: unknown;
+      manual?: unknown;
+    };
     const requestedLimit = Number(payload.limit);
     const limit = Number.isFinite(requestedLimit)
       ? Math.min(20, Math.max(1, Math.round(requestedLimit)))
       : 12;
     const rssHub = configuredRssHub();
+    const selection =
+      typeof payload.selection === "string" && payload.selection.length <= 2_048
+        ? payload.selection
+        : undefined;
+
+    if (payload.manual !== undefined) {
+      if (!rssHub) {
+        throw new PreviewError(
+          "RSSHUB_NOT_CONFIGURED",
+          "微信公众号专用订阅需要先配置 RSSHub。",
+          false,
+          503,
+        );
+      }
+      const manual = manualRssHubMatch(payload.manual);
+      const outcome = await tryRssHubPreview(
+        rssHub,
+        manual.url,
+        limit,
+        manual.match,
+        manual.platform,
+        manual.manual,
+      );
+      if (outcome.kind === "success") return json(outcome.payload);
+      const fallback = platformLinkPreview(
+        manual.url,
+        manual.platform,
+        "failed",
+        [manual.match],
+        manual.match,
+      )!;
+      return json({
+        ...fallback,
+        source: {
+          ...fallback.source,
+          provider: "rsshub",
+          rsshubSelection: manual.match.id,
+          manualSubscription: manual.manual,
+        },
+      });
+    }
+
+    if (typeof payload.url !== "string" || payload.url.length > 2_048) {
+      throw new PreviewError("INVALID_URL", "请输入一个有效的订阅地址。", false, 400);
+    }
+
+    const resolvedUrl = await resolveAllowedShortLink(inputUrl(payload.url));
+    const normalized = normalizePlatformUrl(resolvedUrl);
+    const initialUrl = normalized.url;
+    const platform = findLinkPlatform(initialUrl);
 
     if (platform) {
       if (rssHub) {
-        const outcome = await tryRssHubPreview(rssHub, initialUrl, limit, platform);
+        const { outcome, matches } = await rssHubCandidateOutcome(
+          rssHub,
+          initialUrl,
+          limit,
+          platform,
+          selection,
+          normalized.preferredTitle,
+        );
         if (outcome.kind === "success") return json(outcome.payload);
-        return json(platformLinkPreview(initialUrl, platform, outcome.kind));
+        return json(
+          platformLinkPreview(
+            initialUrl,
+            platform,
+            outcome.kind,
+            matches,
+            outcome.kind === "failed" ? outcome.match : undefined,
+          ),
+        );
       }
       return json(platformLinkPreview(initialUrl, platform));
     }
 
     try {
+      if (rssHub && selection) {
+        const { outcome } = await rssHubCandidateOutcome(
+          rssHub,
+          initialUrl,
+          limit,
+          undefined,
+          selection,
+        );
+        if (outcome.kind === "success") return json(outcome.payload);
+      }
+
       const first = await fetchWithLimits(initialUrl);
 
       const looksLikeHtml =
@@ -990,7 +1456,13 @@ export async function POST(request: Request) {
       });
     } catch (directError) {
       if (rssHub) {
-        const outcome = await tryRssHubPreview(rssHub, initialUrl, limit);
+        const { outcome } = await rssHubCandidateOutcome(
+          rssHub,
+          initialUrl,
+          limit,
+          undefined,
+          selection,
+        );
         if (outcome.kind === "success") return json(outcome.payload);
       }
       throw directError;

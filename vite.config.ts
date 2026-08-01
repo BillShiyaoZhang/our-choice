@@ -3,10 +3,17 @@ import { defineConfig } from "vite";
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+const WORKER_BINDING_NAMES = ["RSSHUB_BASE_URL", "RSSHUB_ACCESS_KEY"] as const;
+const runtimeBindings = Object.fromEntries(
+  WORKER_BINDING_NAMES.flatMap((name) =>
+    process.env[name] === undefined ? [] : [[name, process.env[name]!]],
+  ),
+);
 
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
+  vars: runtimeBindings,
 };
 
 export default defineConfig(async () => {

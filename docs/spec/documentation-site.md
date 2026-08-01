@@ -46,24 +46,32 @@
 
 ## 中文内容平台适配
 
-- 可识别并保存 Bilibili、微信公众号、知乎、小红书、抖音、快手、微博、小宇宙、今日头条、百家号、豆瓣和喜马拉雅的公开 HTTP(S) 链接。
-- 上述平台链接返回统一的 `link-only` 预览，响应包含稳定的平台标识、中文平台名、原始公开链接、空内容列表和明确警告；Bilibili 继续兼容创作者 `mid` 与原有警告码。
-- 客户端按平台标识持久化来源并展示对应平台名；链接来源不参与 RSS 自动刷新，但可从主显示区打开，平台拒绝 iframe 时可在当前页降级打开。
+- 可识别并保存 Bilibili、微信公众号、知乎、小红书、抖音、快手、微博、小宇宙、今日头条、百家号、豆瓣和喜马拉雅的公开 HTTP(S) 链接；添加订阅界面为各平台提供入口、输入示例和平台特定说明。
+- 切换到另一个平台入口时开始一份新的订阅草稿，清空上一平台的 URL、显示名称和识别结果，避免把不相干地址误带入新的专用入口；重复点击当前入口不破坏已输入内容。
+- 输入可为纯 URL 或包含一个公开 HTTP(S) URL 的分享文案；服务端去除非根路径末尾斜杠和跟踪查询参数后再匹配。只对 `b23.tv`、`xhslink.com`、`v.douyin.com` 等明确允许的短链域名跟随有限次公开重定向，并继续执行 SSRF 校验。
+- 当一个页面对应多个订阅范围时，API 返回 `select` 模式及安全候选列表，不抢先抓取任一 Feed；用户必须明确选择要订阅的内容，例如 B站投稿、动态、图文或收藏，以及知乎动态、回答、文章或收藏。
+- Radar 候选按来源模板具体程度筛选；具体路径优先于通用占位路径，避免知乎问题页被误识别为用户文章。候选 ID 不包含 RSSHub 实例地址或访问密钥，服务端在执行选择时重新发现并验证候选。
+- B站空间页的 `/video`、`/dynamic`、`/article` 和 `/favlist` 标签 URL 自动归一到创作者主页并预选对应订阅类型；单个视频或帖子等不能表达持续订阅范围的页面保留链接模式，并说明应改用作者主页。
+- 喜马拉雅专辑页即使没有 Radar 规则，也通过内置、安全的 URL 到 `/ximalaya/:type/:id` 映射提供专辑订阅；单集页仍保留链接模式。
+- 微信公众号提供专用手工入口，可选择优读公众号 ID、公众号栏目 `biz/hid/cid` 或 Wechat2RSS ID；这些参数只用于构造允许的 RSSHub 路由。普通文章 URL 无法可靠推导公众号历史订阅时不做猜测。
+- 客户端持久化用户选定的安全候选 ID 或手工订阅描述；刷新时重新验证路由，不保存 RSSHub 实例地址或访问密钥。链接来源不参与 RSS 自动刷新，但可从主显示区打开。
 - RSS、Atom、公开播客 Feed 和网页 Feed 自动发现仍使用 `live` 模式，不因平台链接适配而降级。
-- 不调用或模拟平台非公开接口，不绕过登录、反爬、Cookie、CSP 或 `X-Frame-Options`；短链只按原始公开链接保存，不由服务端跟随到私有目标。
+- 不在应用中模拟平台非公开接口，不绕过登录、验证码、反爬、CSP 或 `X-Frame-Options`；RSSHub 路由需要 Cookie 或 Token 时显示可操作的部署提示，凭据仅由部署者通过服务端环境变量提供。
 
 ## RSSHub 与 Radar 来源发现
 
 - 服务端可通过 `RSSHUB_BASE_URL` 连接由部署者选择的 RSSHub 实例；未配置时保持现有公开 Feed 与平台链接模式，不默认把用户地址发送给公共 RSSHub 实例。
-- 来源识别优先读取 RSSHub 的 `/api/radar/rules/{domain}` JSON 接口，使用与 RSSHub-Radar 同源的域名、子域名和路径模板发现候选路由。应用不加载或执行远程 JavaScript，也不把 RSSHub 或 RSSHub-Radar 的 AGPL 源码嵌入前端包。
+- 来源识别优先读取 RSSHub 的 `/api/radar/rules/{domain}` JSON 接口，使用与 RSSHub-Radar 同源的域名、子域名和路径模板发现全部安全候选路由。应用不加载或执行远程 JavaScript，也不把 RSSHub 或 RSSHub-Radar 的 AGPL 源码嵌入前端包。
 - 仅接受规则返回的同实例绝对路径；路径模板参数只能来自用户已提交 URL 的路径、查询或片段。无法安全解析的模板视为不匹配，不执行表达式或动态代码。
 - `RSSHUB_ACCESS_KEY` 只由服务端在请求 Radar API 与 Feed 时附加，不写入 API 响应、浏览器存储、日志文案或导出的 JSON。
-- RSSHub 成功返回可识别的 RSS/Atom 时，来源使用 `live` 模式并保留原平台标识、原始地址、RSSHub 提供方和安全的路由路径；后续刷新重新从原始地址解析规则，避免持久化内部实例地址或访问密钥。
+- RSSHub 成功返回可识别的 RSS/Atom 时，来源使用 `live` 模式并保留原平台标识、规范化公开地址、RSSHub 提供方和所选候选 ID；后续刷新重新发现并验证规则，避免持久化内部实例地址或访问密钥。
+- RSSHub Feed 请求使用独立的较长超时，适配 Chromium 路由；失败响应保留路由名称、失败类别和其他候选，让用户可以改选而不丢失链接来源。
 - RSSHub 未配置、没有匹配规则、规则需要当前安全匹配器不支持的动态页面信息，或实例暂时不可用时，十二个已知中文平台继续返回 `link-only`，旧内容与原有链接订阅能力不受影响。
 - 对普通网站仍优先使用其公开 RSS/Atom 或 HTML Feed 声明；直接读取失败后才尝试已配置的 RSSHub Radar 规则，从而扩展到现有十二个平台之外的来源。
 - Docker Compose 提供与应用分离的官方 RSSHub 容器，并通过内部网络连接；两者分别运行和遵守各自许可证。直接运行 `npm run dev` 时由开发者显式配置外部或本地 RSSHub 地址。
-- Dev Container 使用独立的 Compose 文件：`workspace` 服务提供 Node.js 22 开发环境与源码挂载，`rsshub` sidecar 自动随工作区启动；开发容器通过 `http://rsshub:1200` 访问它，不要求 Docker-in-Docker，也不向宿主机公开 RSSHub 端口。
-- 开发服务器监听 `0.0.0.0`，确保 Dev Container 的 IPv4 端口转发能够访问应用；Dev Container 自动安装锁定依赖并转发应用的 `3000` 端口。可选的宿主机 `RSSHUB_ACCESS_KEY` 同时传给工作区的 `RSSHUB_ACCESS_KEY` 和 sidecar 的 `ACCESS_KEY`；未设置时允许本地开发环境无密钥运行。
+- Dev Container 使用独立的 Compose 文件：`workspace` 服务提供 Node.js 22 开发环境与源码挂载，`rsshub` sidecar 自动随工作区启动；Cloudflare Vite 配置把允许名单中的容器环境变量显式注入本地 Worker bindings，使应用确实通过 `http://rsshub:1200` 访问 sidecar，不要求 Docker-in-Docker，也不向宿主机公开 RSSHub 端口。
+- Dev Container 可向 RSSHub sidecar 传递 `BILIBILI_COOKIE_1`、`ZHIHU_COOKIES`、`XIAOHONGSHU_COOKIE`、`WEIBO_COOKIES` 与 `XIMALAYA_TOKEN`；空值不启用凭据。应用和浏览器均不得读取、返回或持久化这些值。
+- 开发服务器监听 `0.0.0.0`；Compose 把工作区的 `3000` 端口发布到宿主机回环地址 `127.0.0.1:${APP_PORT:-3000}`，编辑器同时声明自动转发，因此从编辑器预览或宿主机浏览器打开 `http://localhost:3000` 都能访问，且不会暴露到局域网。Dev Container 自动安装锁定依赖。可选的宿主机 `RSSHUB_ACCESS_KEY` 同时传给工作区的 `RSSHUB_ACCESS_KEY` 和 sidecar 的 `ACCESS_KEY`；未设置时允许本地开发环境无密钥运行。
 
 ## 验收标准
 
@@ -73,7 +81,7 @@
 - 开发和构建命令自动同步文档，构建产物包含 `docs/index.html`。
 - GitHub Pages 工作流使用当前官方 Actions，权限与发布目录正确。
 - 文档专项测试、现有测试、构建和 lint 全部通过。
-- 上述十二个平台均有确定性的接口测试，验证平台识别、链接模式、原始链接保留和警告信息。
-- RSSHub/Radar 测试使用本地模拟响应，验证域名规则发现、路径参数替换、实时 Feed 解析、密钥不泄露、无规则/上游失败降级，以及未配置时的兼容行为；测试不得依赖真实 RSSHub 或平台网络。
-- Dev Container 配置测试验证 Compose 文件、工作区服务、源码挂载、RSSHub sidecar、内部服务地址、密钥映射、开发服务器监听地址、`3000` 端口转发与依赖安装命令保持一致；Compose 配置必须可由 Docker 正常解析。
+- 上述十二个平台均有确定性的接口测试，验证平台识别、输入归一化、分享文案、允许短链、内容页提示、链接模式和警告信息。
+- RSSHub/Radar 测试使用本地模拟响应，验证多候选返回、具体规则优先、候选选择与重新验证、平台显式映射、手工微信公众号路由、实时 Feed 解析、密钥不泄露、无规则/上游失败降级，以及未配置时的兼容行为；测试不得依赖真实 RSSHub 或平台网络。
+- Dev Container 配置测试验证 Compose 文件、工作区服务、源码挂载、RSSHub sidecar、Worker bindings、内部服务地址、允许的凭据映射、开发服务器监听地址、宿主机回环端口发布、编辑器 `3000` 端口转发与依赖安装命令保持一致；RSSHub 的 `1200` 端口仍只在内部网络暴露，Compose 配置必须可由 Docker 正常解析。
 - GitHub Pages URL 可公开访问并返回文档首页。

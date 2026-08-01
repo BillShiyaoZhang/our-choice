@@ -52,10 +52,11 @@ test("integrates docs with development, builds, and product navigation", async (
 });
 
 test("Dev Container starts the workspace and RSSHub as isolated Compose services", async () => {
-  const [devContainerText, compose, packageJsonText] = await Promise.all([
+  const [devContainerText, compose, packageJsonText, viteConfig] = await Promise.all([
     text(".devcontainer/devcontainer.json"),
     text(".devcontainer/compose.yaml"),
     text("package.json"),
+    text("vite.config.ts"),
   ]);
   const devContainer = JSON.parse(devContainerText);
   const packageJson = JSON.parse(packageJsonText);
@@ -83,7 +84,39 @@ test("Dev Container starts the workspace and RSSHub as isolated Compose services
   assert.match(compose, /^\s{2}rsshub:\s*$/m);
   assert.match(compose, /ghcr\.io\/diygod\/rsshub:chromium-bundled/);
   assert.match(compose, /ACCESS_KEY:\s*\$\{RSSHUB_ACCESS_KEY:-\}/);
-  assert.doesNotMatch(compose, /^\s+ports:/m);
+  for (const name of [
+    "BILIBILI_COOKIE_1",
+    "ZHIHU_COOKIES",
+    "XIAOHONGSHU_COOKIE",
+    "WEIBO_COOKIES",
+    "XIMALAYA_TOKEN",
+  ]) {
+    assert.match(compose, new RegExp(`${name}:\\s*\\$\\{${name}:-\\}`));
+  }
+  assert.match(viteConfig, /vars:\s*runtimeBindings/);
+  assert.match(viteConfig, /RSSHUB_BASE_URL/);
+  assert.match(viteConfig, /RSSHUB_ACCESS_KEY/);
+  assert.match(
+    compose,
+    /ports:\s*\n\s+- "127\.0\.0\.1:\$\{APP_PORT:-3000\}:3000"/,
+  );
+  assert.equal(compose.match(/^\s+ports:/gm)?.length, 1);
+});
+
+test("documents and exposes platform-specific subscription choices", async () => {
+  const [html, app] = await Promise.all([
+    text("docs/index.html"),
+    text("app/our-choice-app.tsx"),
+  ]);
+
+  assert.match(html, /选择平台入口/);
+  assert.match(html, /投稿、动态、图文、回答、专栏/);
+  assert.match(app, /选择平台/);
+  assert.match(app, /选择要订阅的内容/);
+  assert.match(app, /微信公众号专用参数/);
+  assert.match(app, /function selectSubscriptionEntry/);
+  assert.match(app, /setUrl\(""\)/);
+  assert.match(app, /topbar-add[^>]+aria-label="添加订阅"/);
 });
 
 test("deploys docs through a least-privilege GitHub Pages workflow", async () => {

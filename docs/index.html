@@ -151,7 +151,7 @@ npm run dev</code></pre>
             <div><p class="section-kicker">A CALM READING LOOP</p><h2>从订阅到读完</h2></div>
           </div>
           <div class="steps">
-            <article><span>1</span><div><h3>添加你信任的来源</h3><p>粘贴 RSS、Atom、网站地址或 Bilibili 创作者主页，确认预览后再订阅。</p></div></article>
+            <article><span>1</span><div><h3>添加你信任的来源</h3><p>选择平台入口，粘贴主页、分享文案、RSS 或网站地址；一个页面有多种订阅范围时，再明确选择要看的内容。</p></div></article>
             <article><span>2</span><div><h3>在“今日”集中处理</h3><p>按文章、视频、播客或新增筛选；点击后在主显示区打开，并用固定返回按钮回到自选。</p></div></article>
             <article><span>3</span><div><h3>把值得保留的内容放进合集</h3><p>创建自己的主题合集，或从发现页明确订阅一个人工精选合集。</p></div></article>
             <article><span>4</span><div><h3>定期导出本地数据</h3><p>在设置中下载 JSON 备份，换浏览器或清理数据前可随时恢复。</p></div></article>
@@ -165,7 +165,9 @@ npm run dev</code></pre>
               <h3>添加来源</h3>
               <ol>
                 <li>点击右上角“添加订阅”。</li>
-                <li>粘贴公开的 HTTP(S) 地址。</li>
+                <li>选择“链接或 RSS”或一个中文内容平台入口。</li>
+                <li>粘贴公开 URL 或包含 URL 的分享文案；微信公众号也可选择 ID/Biz 专用入口。</li>
+                <li>如果出现多个候选，选择投稿、动态、图文、回答、专栏等订阅范围。</li>
                 <li>检查来源名称、模式和最近内容预览。</li>
                 <li>选择是否保留最近 3 条作为频道历史，然后确认。</li>
               </ol>
@@ -173,7 +175,7 @@ npm run dev</code></pre>
             <div>
               <h3>管理来源</h3>
               <p>在“订阅”中可打开频道、单独刷新、暂停或移除来源。批量刷新最多同时处理三路，失败不会清空旧内容。</p>
-              <p>Bilibili、微信公众号、知乎、小红书、抖音、快手、微博、小宇宙、今日头条、百家号、豆瓣和喜马拉雅默认以站内链接模式保存。部署者配置 RSSHub 后，自选会使用 Radar 规则把可安全匹配的公开页面转换为可刷新的订阅；无规则或转换失败时仍保留链接模式。</p>
+              <p>Bilibili、微信公众号、知乎、小红书、抖音、快手、微博、小宇宙、今日头条、百家号、豆瓣和喜马拉雅都有针对性入口。部署者配置 RSSHub 后，自选会列出 Radar 候选供用户选择；喜马拉雅专辑使用显式映射，微信公众号可填写优读 ID、Biz/HID 或 Wechat2RSS ID。无规则或转换失败时仍保留链接模式。</p>
             </div>
           </div>
           <div class="callout warning"><span aria-hidden="true">!</span><div><strong>无法识别网页？</strong><p>优先粘贴网站公开的 RSS/Atom 地址。普通网页只有声明了公开 Feed 时才能自动发现。</p></div></div>
@@ -211,7 +213,8 @@ npm run dev</code></pre>
         <section class="doc-section section-block" id="troubleshooting" data-doc-section data-keywords="问题 FAQ 错误 刷新 订阅 丢失 导入 网络">
           <div class="section-heading compact"><span class="section-number">07</span><div><h2>常见问题</h2></div></div>
           <details><summary>订阅刷新失败会丢掉之前的内容吗？</summary><p>不会。来源请求或解析失败时会保留已有内容，并给出可重试提示。</p></details>
-          <details><summary>为什么中文内容平台没有内容预览？</summary><p>自选不会调用平台非公开接口。未配置 RSSHub、Radar 没有适用规则或该路由需要额外凭据时，会安全降级为公开链接；网站自己的 Feed 和可用的 RSSHub 路由仍可正常预览。</p></details>
+          <details><summary>为什么中文内容平台没有内容预览？</summary><p>先确认已经选择具体订阅范围。未配置 RSSHub、Radar 没有适用规则、源站触发反爬，或该路由需要部署者配置 Cookie/Token 时，会安全降级为公开链接并显示原因；网站自己的 Feed 和可用的 RSSHub 路由仍可正常预览。</p></details>
+          <details><summary>为什么分享短链或末尾带斜杠的地址识别失败？</summary><p>自选会规范化末尾斜杠，并只跟随 B站、小红书、抖音等明确允许域名的有限次公开短链跳转；其他跳转继续按 SSRF 安全规则拒绝。分享文案中只应包含一个要订阅的公开 URL。</p></details>
           <details><summary>为什么有些页面无法在主显示区打开？</summary><p>部分平台通过 X-Frame-Options 或 CSP 禁止任何第三方站点内嵌。此时可在当前页打开来源，使用浏览器返回后，查看记录仍会保留。</p></details>
           <details><summary>为什么我在内嵌的 B站页面登录后仍显示未登录？</summary><p>浏览器可能隔离或阻止了 iframe 的第三方 Cookie。自选已经为支持 Storage Access API 的来源开放所需权限，但该权限必须由 B站页面自己请求，父页面无法代为调用。请使用查看器中的“在当前页打开并登录 B站”进入第一方登录环境；浏览器返回后，本地阅读记录仍会保留。</p></details>
           <details><summary>自选会保存我的平台密码吗？</summary><p>不会。登录表单、Cookie 与会话都由来源平台和浏览器处理；自选只保存非敏感的平台地址与最近打开时间。</p></details>

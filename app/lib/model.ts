@@ -27,6 +27,11 @@ export type VisualTone =
   | "plum"
   | "ink";
 
+export type RssHubManualSubscription =
+  | { kind: "wechat-uread"; userid: string }
+  | { kind: "wechat-mp"; biz: string; hid: string; cid?: string }
+  | { kind: "wechat-wechat2rss"; id: string };
+
 export interface Source {
   id: string;
   name: string;
@@ -37,6 +42,10 @@ export interface Source {
   /** Original public page re-resolved through RSSHub Radar on every refresh. */
   refreshUrl?: string;
   provider?: "rsshub";
+  /** Stable candidate id, revalidated against current Radar rules on refresh. */
+  rsshubSelection?: string;
+  /** Non-secret identifiers for an allowlisted manual RSSHub route. */
+  manualSubscription?: RssHubManualSubscription;
   initials: string;
   tone: VisualTone;
   enabled: boolean;

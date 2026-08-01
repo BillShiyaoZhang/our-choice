@@ -58,10 +58,10 @@ docker compose up --build
 
 - `workspace` 开发容器挂载当前源码并自动执行 `npm ci`
 - 独立的 RSSHub sidecar 自动启动
-- 应用通过 `RSSHUB_BASE_URL=http://rsshub:1200` 访问 RSSHub
-- 开发服务器监听容器网络，编辑器自动转发应用的 `3000` 端口
+- Cloudflare 本地 Worker 会收到 `RSSHUB_BASE_URL=http://rsshub:1200` binding，并访问 RSSHub
+- 开发服务器监听容器网络；Compose 将其发布到宿主机回环地址，编辑器也自动转发 `3000` 端口，因此可直接打开 `http://localhost:3000`
 
-如需启用 RSSHub 访问密钥，请在启动编辑器前给宿主机设置 `RSSHUB_ACCESS_KEY`；它会同时传给应用和 RSSHub。修改 `.devcontainer/` 后需执行 **Dev Containers: Rebuild Container**。
+宿主机端口默认是 `3000`；若被占用，可在启动容器前设置 `APP_PORT`，然后用对应端口访问。若需启用 RSSHub 访问密钥或平台抓取凭据，请在启动编辑器前给宿主机设置 `RSSHUB_ACCESS_KEY`、`BILIBILI_COOKIE_1`、`ZHIHU_COOKIES`、`XIAOHONGSHU_COOKIE`、`WEIBO_COOKIES` 或 `XIMALAYA_TOKEN`。它们只传给本地 Worker/RSSHub sidecar，不进入浏览器或导出数据。修改 `.devcontainer/` 后需执行 **Dev Containers: Rebuild Container**。
 
 ## 数据与隐私
 

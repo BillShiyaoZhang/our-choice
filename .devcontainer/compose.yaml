@@ -6,6 +6,8 @@ services:
       - ..:/workspaces/our-choice:cached
     working_dir: /workspaces/our-choice
     command: sleep infinity
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
     environment:
       RSSHUB_BASE_URL: http://rsshub:1200
       RSSHUB_ACCESS_KEY: ${RSSHUB_ACCESS_KEY:-}
@@ -19,6 +21,11 @@ services:
       NODE_ENV: production
       CACHE_TYPE: memory
       ACCESS_KEY: ${RSSHUB_ACCESS_KEY:-}
+      BILIBILI_COOKIE_1: ${BILIBILI_COOKIE_1:-}
+      ZHIHU_COOKIES: ${ZHIHU_COOKIES:-}
+      XIAOHONGSHU_COOKIE: ${XIAOHONGSHU_COOKIE:-}
+      WEIBO_COOKIES: ${WEIBO_COOKIES:-}
+      XIMALAYA_TOKEN: ${XIMALAYA_TOKEN:-}
     expose:
       - "1200"
     restart: unless-stopped

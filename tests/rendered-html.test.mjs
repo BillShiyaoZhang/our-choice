@@ -3,6 +3,17 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const templateRoot = new URL("../", import.meta.url);
+const inheritedRssHubBaseUrl = process.env.RSSHUB_BASE_URL;
+const inheritedRssHubAccessKey = process.env.RSSHUB_ACCESS_KEY;
+delete process.env.RSSHUB_BASE_URL;
+delete process.env.RSSHUB_ACCESS_KEY;
+
+test.after(() => {
+  if (inheritedRssHubBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+  else process.env.RSSHUB_BASE_URL = inheritedRssHubBaseUrl;
+  if (inheritedRssHubAccessKey === undefined) delete process.env.RSSHUB_ACCESS_KEY;
+  else process.env.RSSHUB_ACCESS_KEY = inheritedRssHubAccessKey;
+});
 
 async function worker() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -163,6 +174,33 @@ test("mainstream Chinese content platforms use explicit link-only previews", asy
   }
 });
 
+test("content-page inputs explain which persistent source URL to use", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async () => Response.json({ _name: "哔哩哔哩", www: [] });
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://www.bilibili.com/video/BV1test" }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(payload.mode, "link-only");
+    assert.match(payload.warning.message, /UP 主主页/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
 test("configured RSSHub resolves Radar rules without exposing its instance or access key", async () => {
   const previousBaseUrl = process.env.RSSHUB_BASE_URL;
   const previousAccessKey = process.env.RSSHUB_ACCESS_KEY;
@@ -232,6 +270,286 @@ test("configured RSSHub resolves Radar rules without exposing its instance or ac
     else process.env.RSSHUB_BASE_URL = previousBaseUrl;
     if (previousAccessKey === undefined) delete process.env.RSSHUB_ACCESS_KEY;
     else process.env.RSSHUB_ACCESS_KEY = previousAccessKey;
+  }
+});
+
+test("multiple RSSHub matches require an explicit content choice", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  const requestedUrls = [];
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    requestedUrls.push(url);
+    if (url === "https://rsshub.example/api/radar/rules/bilibili.com") {
+      return Response.json({
+        _name: "哔哩哔哩",
+        space: [
+          {
+            title: "UP 主图文",
+            source: ["/:uid"],
+            target: "/bilibili/user/article/:uid",
+          },
+          {
+            title: "UP 主投稿",
+            source: ["/:uid"],
+            target: "/bilibili/user/video/:uid",
+          },
+        ],
+      });
+    }
+    throw new Error(`Feed should not be fetched before selection: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://space.bilibili.com/946974/" }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.mode, "select");
+    assert.equal(payload.source.kind, "bilibili");
+    assert.equal(payload.source.profileUrl, "https://space.bilibili.com/946974");
+    assert.deepEqual(
+      payload.options.map((option) => option.title),
+      ["UP 主图文", "UP 主投稿"],
+    );
+    assert.equal(requestedUrls.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
+test("a selected RSSHub candidate is rediscovered and fetched", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  const sourceUrl = "https://space.bilibili.com/946974";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === "https://rsshub.example/api/radar/rules/bilibili.com") {
+      return Response.json({
+        space: [
+          { title: "UP 主图文", source: ["/:uid"], target: "/bilibili/user/article/:uid" },
+          { title: "UP 主投稿", source: ["/:uid"], target: "/bilibili/user/video/:uid" },
+        ],
+      });
+    }
+    if (url === "https://rsshub.example/bilibili/user/video/946974") {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>undefined 的 bilibili 投稿</title><link>${sourceUrl}</link><item><title>新视频</title><link>https://www.bilibili.com/video/BV1new</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: sourceUrl,
+          selection: "radar:/bilibili/user/video/946974",
+        }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.source.rsshubSelection, "radar:/bilibili/user/video/946974");
+    assert.equal(payload.source.routeTitle, "UP 主投稿");
+    assert.equal(payload.source.title, "B 站 · UP 主投稿");
+    assert.equal(payload.items[0].title, "新视频");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
+test("specific Radar patterns outrank generic placeholder patterns", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === "https://rsshub.example/api/radar/rules/zhihu.com") {
+      return Response.json({
+        www: [
+          { title: "用户文章", source: ["/:usertype/:id"], target: "/zhihu/posts/:usertype/:id" },
+          { title: "问题", source: ["/question/:questionId"], target: "/zhihu/question/:questionId" },
+        ],
+      });
+    }
+    if (url === "https://rsshub.example/zhihu/question/19581624") {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>知乎问题</title><link>https://www.zhihu.com/question/19581624</link><item><title>回答</title><link>https://www.zhihu.com/question/19581624/answer/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://www.zhihu.com/question/19581624" }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.source.rsshubRoute, "/zhihu/question/19581624");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
+test("share text and allowlisted short links resolve to normalized platform URLs", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === "https://b23.tv/abc") {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://space.bilibili.com/946974/?spm_id_from=333.337.0.0" },
+      });
+    }
+    if (url === "https://rsshub.example/api/radar/rules/bilibili.com") {
+      return Response.json({
+        space: [{ title: "UP 主投稿", source: ["/:uid"], target: "/bilibili/user/video/:uid" }],
+      });
+    }
+    if (url === "https://rsshub.example/bilibili/user/video/946974") {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>投稿</title><link>https://space.bilibili.com/946974</link><item><title>视频</title><link>https://www.bilibili.com/video/BV1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: "推荐这个 UP 主 https://b23.tv/abc 。" }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.source.refreshUrl, "https://space.bilibili.com/946974");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
+test("explicit Ximalaya album mapping works without a Radar rule", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === "https://rsshub.example/api/radar/rules/ximalaya.com") {
+      return new Response("");
+    }
+    if (url === "https://rsshub.example/ximalaya/album/299146") {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>喜马拉雅专辑</title><link>https://www.ximalaya.com/album/299146</link><item><title>第一集</title><link>https://www.ximalaya.com/sound/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://www.ximalaya.com/album/299146/" }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.source.rsshubRoute, "/ximalaya/album/299146");
+    assert.equal(payload.source.rsshubSelection, "manual:ximalaya-album");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
+test("manual WeChat subscription inputs build only allowlisted RSSHub routes", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    assert.equal(url, "https://rsshub.example/wechat/mp/homepage/MzA3MDM3NjE5NQ%3D%3D/16");
+    return new Response(
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>公众号栏目</title><link>https://mp.weixin.qq.com/</link><item><title>文章</title><link>https://mp.weixin.qq.com/s/one</link></item></channel></rss>`,
+      { headers: { "content-type": "application/rss+xml" } },
+    );
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          manual: { kind: "wechat-mp", biz: "MzA3MDM3NjE5NQ==", hid: "16" },
+        }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.source.kind, "wechat");
+    assert.deepEqual(payload.source.manualSubscription, {
+      kind: "wechat-mp",
+      biz: "MzA3MDM3NjE5NQ==",
+      hid: "16",
+    });
+    assert.doesNotMatch(JSON.stringify(payload), /rsshub\.example/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
   }
 });
 
