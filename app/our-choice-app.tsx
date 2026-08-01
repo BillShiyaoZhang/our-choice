@@ -873,6 +873,10 @@ export function OurChoiceApp() {
           </button>
         </div>
 
+        <a className="settings-link docs-link" href="/docs/">
+          <FileText size={18} />
+          <span>文档</span>
+        </a>
         <button className="settings-link" type="button" onClick={() => setSettingsOpen(true)}>
           <Settings size={18} />
           <span>设置</span>
@@ -1029,6 +1033,10 @@ export function OurChoiceApp() {
             </button>
           );
         })}
+        <a href="/docs/">
+          <FileText size={20} />
+          <span>文档</span>
+        </a>
       </nav>
 
       {addOpen && (

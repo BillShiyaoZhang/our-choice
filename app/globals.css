@@ -331,6 +331,7 @@ a {
   color: var(--ink-muted);
   cursor: pointer;
   font-size: 13px;
+  text-decoration: none;
   transition: background 150ms ease, color 150ms ease;
 }
 
@@ -3812,7 +3813,7 @@ a {
     left: 10px;
     display: grid;
     height: 66px;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     padding: 5px;
     border: 1px solid rgb(216 217 209 / 88%);
     border-radius: 17px;
@@ -3821,7 +3822,8 @@ a {
     backdrop-filter: blur(18px);
   }
 
-  .mobile-bottom-nav button {
+  .mobile-bottom-nav button,
+  .mobile-bottom-nav a {
     display: flex;
     min-width: 0;
     align-items: center;
@@ -3833,6 +3835,7 @@ a {
     color: var(--ink-muted);
     cursor: pointer;
     font-size: 9px;
+    text-decoration: none;
   }
 
   .mobile-bottom-nav button.is-active {
@@ -4040,4 +4043,3 @@ a {
     animation-iteration-count: 1 !important;
   }
 }
-
