@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>自选助手</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="mark" aria-hidden="true"><i></i></span>
+        <div><strong>自选助手</strong><small>OUR CHOICE</small></div>
+        <button id="open-settings" class="icon-button" type="button" aria-label="连接设置">•••</button>
+      </header>
+
+      <section id="settings" class="settings" hidden>
+        <label>本地应用地址<input id="app-url" type="url" value="http://localhost:3000" /></label>
+        <label>配对码<input id="pairing-code" type="password" autocomplete="off" placeholder="从自选设置中复制" /></label>
+        <button id="save-settings" class="secondary" type="button">保存连接</button>
+        <p>配对码只保存在这个扩展中。</p>
+      </section>
+
+      <section id="page-card" class="page-card" aria-live="polite">
+        <span id="page-site">正在识别当前页面…</span>
+        <h1 id="page-title">请稍候</h1>
+        <p id="selection-note" hidden>将同时保存当前选中的文字</p>
+      </section>
+
+      <section class="actions" aria-label="当前页面操作">
+        <button id="save-later" class="primary" type="button" disabled>稍后看</button>
+        <button id="save-collection" type="button" disabled>收藏到合集</button>
+        <button id="subscribe" type="button" disabled>订阅这个来源</button>
+      </section>
+
+      <section id="bilibili-scan" class="scan" hidden>
+        <div><strong>B站关注导入</strong><span id="scan-count">尚未开始</span></div>
+        <p>开始后，在关注页滚动或切换分页，每页点击一次扫描。</p>
+        <div>
+          <button id="begin-scan" type="button">开始新一轮</button>
+          <button id="scan-page" type="button" disabled>扫描本页</button>
+          <button id="finish-scan" class="primary" type="button" disabled>完成并发送</button>
+        </div>
+      </section>
+
+      <p id="status" class="status" role="status"></p>
+      <footer>
+        <button id="open-app" type="button">打开自选</button>
+        <button id="export-queue" type="button">导出待处理 JSON</button>
+      </footer>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

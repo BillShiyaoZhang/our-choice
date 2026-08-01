@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "自选助手",
+  "version": "0.1.0",
+  "description": "把当前网页收藏、订阅或批量导入到本地优先的自选。",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "自选助手",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://localhost:3000/*", "http://127.0.0.1:3000/*"],
+      "js": ["app-bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

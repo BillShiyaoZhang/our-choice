@@ -68,6 +68,12 @@ export interface Source {
   /** Feed item ids observed at the baseline or during later refreshes. */
   knownItemIds?: string[];
   lastOpenedAt?: string;
+  /** Source was discovered and confirmed through the optional local browser helper. */
+  importedFrom?: "browser-extension";
+  /** Platform-stable public identifier, such as a Bilibili MID. */
+  externalId?: string;
+  importBatchId?: string;
+  isSystem?: boolean;
   isDemo?: boolean;
 }
 
@@ -87,6 +93,10 @@ export interface ContentItem {
   isNew?: boolean;
   discoveredAt?: string;
   viewedAt?: string;
+  /** Metadata for a user-initiated browser capture; never contains credentials. */
+  capturedAt?: string;
+  selectionText?: string;
+  capturedFrom?: "browser-extension";
   thumbnailUrl?: string;
   tone: VisualTone;
   visualLabel: string;

@@ -43,6 +43,7 @@
           <p>用户指南</p>
           <a href="#user-guide">使用路径</a>
           <a href="#subscriptions">添加与管理订阅</a>
+          <a href="#browser-assistant">浏览器助手</a>
           <a href="#reading">阅读与整理</a>
           <a href="#privacy">数据与隐私</a>
           <a href="#troubleshooting">常见问题</a>
@@ -182,6 +183,34 @@ npm run dev</code></pre>
           <div class="callout warning"><span aria-hidden="true">!</span><div><strong>无法识别网页？</strong><p>优先粘贴网站公开的 RSS/Atom 地址。普通网页只有声明了公开 Feed 时才能自动发现。</p></div></div>
         </section>
 
+        <section class="doc-section section-block" id="browser-assistant" data-doc-section data-keywords="自选浏览器助手 插件 Chrome Edge 收藏 订阅 B站 关注 导入 扫描本页 配对码">
+          <div class="section-heading compact"><span class="section-number">04+</span><div><h2>自选浏览器助手</h2></div></div>
+          <p class="lead">随仓库提供的 Manifest V3 扩展可以在用户浏览时收藏当前内容、订阅当前来源，并把 B站关注页中的 UP 主批量送回自选确认。平台登录始终留在原网站，扩展不会读取或保存密码、Cookie 或访问令牌。</p>
+          <div class="prose-grid">
+            <div>
+              <h3>安装与配对</h3>
+              <ol>
+                <li>在 Chrome 或 Edge 的扩展管理页启用开发者模式。</li>
+                <li>选择“加载已解压的扩展程序”，指向仓库的 <code>browser-extension/</code>。</li>
+                <li>在自选“设置 → 浏览器助手”生成配对码，复制到扩展连接设置。</li>
+                <li>点击“检查待处理内容”验证连接；配对码单独保存在本机，不进入备份。</li>
+              </ol>
+            </div>
+            <div>
+              <h3>收藏与订阅</h3>
+              <p>“稍后看”直接进入系统合集；“收藏到合集”会在自选中要求选择目标合集。扩展只保存标题、规范 URL、摘要、封面和用户主动选中的文字，不保存整页快照。</p>
+              <p>“订阅这个来源”优先使用页面声明的 RSS/Atom，否则交给现有来源预览接口识别网站、作者主页、RSSHub 或链接模式。首次导入建立当前基线，历史内容不会被标成新增。</p>
+            </div>
+          </div>
+          <h3>B站关注导入</h3>
+          <ol>
+            <li>打开自己的 B站关注页，在扩展中选择“开始新一轮”。</li>
+            <li>滚动或切换分页后点击“扫描本页”，扩展按公开 MID 合并当前页面中已经显示的 UP 主。</li>
+            <li>覆盖需要的页面后选择“完成并发送”，再在自选中预览、去重并确认。</li>
+          </ol>
+          <aside class="note security"><strong>增量而非强制镜像</strong><p>相对上次完整扫描新增的账号默认勾选；不再出现的账号只作提示，不会自动暂停或删除自选里的来源。页面改版可能影响识别，因此每次都需要用户确认。</p></aside>
+        </section>
+
         <section class="doc-section section-block" id="reading" data-doc-section data-keywords="今日 阅读 稍后 合集 发现 搜索 安静 专注 筛选">
           <div class="section-heading compact"><span class="section-number">05</span><div><h2>阅读与整理</h2></div></div>
           <div class="feature-list">
@@ -207,6 +236,7 @@ npm run dev</code></pre>
             <li><strong>恢复：</strong>在同一区域导入此前导出的 JSON；导入前请确认文件来源。</li>
             <li><strong>跨标签页：</strong>同一站点下的其他标签页会收到存储变化。</li>
             <li><strong>平台会话：</strong>内嵌页面只有在浏览器与平台允许第三方 Cookie 或 Storage Access 时才能沿用登录状态；自选只记录平台地址和最近打开时间，不接触密码或 Cookie 内容。</li>
+            <li><strong>助手配对：</strong><code>our-choice:assistant:v1</code> 只保存本地配对码，不进入应用状态或 JSON 备份；扩展待处理队列保存在扩展自己的本地存储中。</li>
             <li><strong>清理提醒：</strong>清除浏览器站点数据会删除本地内容，操作前请先导出。</li>
           </ul>
         </section>
@@ -255,6 +285,7 @@ npm run dev</code></pre>
 │   ├── assets/                      # 文档样式与渐进增强脚本
 │   ├── spec/                        # 文档驱动的功能规格
 │   └── index.html                   # 文档站入口
+├── browser-extension/               # 无需构建的自选浏览器助手
 ├── scripts/sync-docs.mjs            # 本地文档同步
 ├── tests/                            # 行为和渲染测试
 └── .github/workflows/               # GitHub Pages 发布</code></pre>
@@ -273,7 +304,7 @@ npm run dev</code></pre>
             <div class="arch-connector"><span>公开 Feed / 内部配置</span><b>→</b></div>
             <div class="arch-node"><small>UPSTREAM</small><strong>RSS / Atom / RSSHub</strong><span>最多 1 MB</span></div>
           </div>
-          <p>客户端拥有产品状态与来源基线；服务端路由只在预览和刷新时请求来源，不持久化用户订阅。配置 RSSHub 后，服务端通过 <code>/api/radar/rules/{domain}</code> 读取同源 Radar 规则并请求匹配的 Feed；实例地址和访问密钥不进入浏览器数据。外部频道和内容通过受限 iframe 在主区域加载，来源平台的会话仍由浏览器管理。响应设置 <code>Cache-Control: no-store</code>。</p>
+          <p>客户端拥有产品状态与来源基线；服务端路由只在预览和刷新时请求来源，不持久化用户订阅。可选浏览器助手使用配对码把本地扩展队列送入客户端确认，网页收藏直接写入本地合集，来源候选仍必须经过预览接口。配置 RSSHub 后，服务端通过 <code>/api/radar/rules/{domain}</code> 读取同源 Radar 规则并请求匹配的 Feed；实例地址和访问密钥不进入浏览器数据。外部频道和内容通过受限 iframe 在主区域加载，来源平台的会话仍由浏览器管理。响应设置 <code>Cache-Control: no-store</code>。</p>
         </section>
 
         <section class="doc-section section-block" id="preview-api" data-doc-section data-keywords="API source preview POST 请求 响应 错误 RSS Bilibili 安全">

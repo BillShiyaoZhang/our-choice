@@ -67,6 +67,8 @@ import {
 } from "./lib/model";
 
 const STORAGE_KEY = "our-choice:state:v1";
+const ASSISTANT_STORAGE_KEY = "our-choice:assistant:v1";
+const CLIP_SOURCE_ID = "source-browser-clips";
 const TONES: VisualTone[] = ["forest", "clay", "ocean", "sun", "plum", "ink"];
 
 type TypeFilter = "all" | ContentType;
@@ -145,6 +147,53 @@ interface ViewerState {
   sourceName: string;
   platform: string;
   returnScrollY: number;
+}
+
+interface AssistantPageCapture {
+  url: string;
+  title: string;
+  description?: string;
+  selection?: string;
+  siteName?: string;
+  imageUrl?: string;
+  contentType: ContentType;
+}
+
+interface AssistantSourceCandidate {
+  url: string;
+  name: string;
+  externalId?: string;
+}
+
+type AssistantQueueItem =
+  | {
+      id: string;
+      kind: "clip";
+      page: AssistantPageCapture;
+      destination: "later" | "collection";
+      capturedAt: string;
+    }
+  | {
+      id: string;
+      kind: "source";
+      candidate: AssistantSourceCandidate;
+      capturedAt: string;
+    }
+  | {
+      id: string;
+      kind: "follow-batch";
+      platform: "bilibili";
+      candidates: AssistantSourceCandidate[];
+      added: AssistantSourceCandidate[];
+      removed: AssistantSourceCandidate[];
+      previousCount: number;
+      capturedAt: string;
+    };
+
+interface AssistantImportSelection {
+  clipIds: string[];
+  sourceKeys: string[];
+  destinations: Record<string, string>;
 }
 
 const navItems: Array<{
@@ -264,6 +313,116 @@ function safeExternalUrl(value: string) {
   }
 }
 
+function normalizedPublicUrl(value: unknown) {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value.trim());
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    url.hash = "";
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function comparableSourceUrl(value: string) {
+  const normalized = normalizedPublicUrl(value);
+  if (!normalized) return "";
+  const url = new URL(normalized);
+  if (url.hostname === "space.bilibili.com") {
+    const mid = url.pathname.match(/^\/(\d+)/)?.[1];
+    if (mid) return `https://space.bilibili.com/${mid}`;
+  }
+  for (const key of [...url.searchParams.keys()]) {
+    if (/^(?:utm_|spm|spm_id_from|from|share_)/i.test(key)) url.searchParams.delete(key);
+  }
+  return url.href;
+}
+
+function assistantText(value: unknown, limit: number) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, limit) : "";
+}
+
+function normalizeAssistantCandidate(value: unknown): AssistantSourceCandidate | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  const url = normalizedPublicUrl(candidate.url);
+  if (!url) return null;
+  return {
+    url,
+    name: assistantText(candidate.name, 120) || new URL(url).hostname,
+    externalId: assistantText(candidate.externalId, 80) || undefined,
+  };
+}
+
+function normalizeAssistantQueue(value: unknown): AssistantQueueItem[] {
+  if (!Array.isArray(value)) return [];
+  const result: AssistantQueueItem[] = [];
+  const ids = new Set<string>();
+  for (const raw of value.slice(0, 500)) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const id = assistantText(item.id, 160);
+    const capturedAt = assistantText(item.capturedAt, 64) || new Date().toISOString();
+    if (!id || ids.has(id)) continue;
+    if (item.kind === "clip" && item.page && typeof item.page === "object") {
+      const page = item.page as Record<string, unknown>;
+      const url = normalizedPublicUrl(page.url);
+      if (!url) continue;
+      const imageUrl = normalizedPublicUrl(page.imageUrl);
+      result.push({
+        id,
+        kind: "clip",
+        capturedAt,
+        destination: item.destination === "collection" ? "collection" : "later",
+        page: {
+          url,
+          title: assistantText(page.title, 240) || new URL(url).hostname,
+          description: assistantText(page.description, 800) || undefined,
+          selection: assistantText(page.selection, 2_000) || undefined,
+          siteName: assistantText(page.siteName, 120) || undefined,
+          imageUrl: imageUrl || undefined,
+          contentType: ["video", "podcast"].includes(String(page.contentType))
+            ? (page.contentType as ContentType)
+            : "article",
+        },
+      });
+      ids.add(id);
+      continue;
+    }
+    if (item.kind === "source") {
+      const candidate = normalizeAssistantCandidate(item.candidate);
+      if (!candidate) continue;
+      result.push({ id, kind: "source", candidate, capturedAt });
+      ids.add(id);
+      continue;
+    }
+    if (item.kind === "follow-batch" && item.platform === "bilibili") {
+      const candidates = (Array.isArray(item.candidates) ? item.candidates : [])
+        .map(normalizeAssistantCandidate)
+        .filter((candidate): candidate is AssistantSourceCandidate => Boolean(candidate));
+      if (!candidates.length) continue;
+      result.push({
+        id,
+        kind: "follow-batch",
+        platform: "bilibili",
+        capturedAt,
+        candidates: Array.from(new Map(candidates.map((candidate) => [comparableSourceUrl(candidate.url), candidate])).values()),
+        added: (Array.isArray(item.added) ? item.added : [])
+          .map(normalizeAssistantCandidate)
+          .filter((candidate): candidate is AssistantSourceCandidate => Boolean(candidate)),
+        removed: (Array.isArray(item.removed) ? item.removed : [])
+          .map(normalizeAssistantCandidate)
+          .filter((candidate): candidate is AssistantSourceCandidate => Boolean(candidate)),
+        previousCount: Number.isFinite(Number(item.previousCount)) ? Math.max(0, Number(item.previousCount)) : 0,
+      });
+      ids.add(id);
+    }
+  }
+  return result;
+}
+
 function normalizeAppData(value: unknown): AppData | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Record<string, unknown>;
@@ -348,9 +507,19 @@ export function OurChoiceApp() {
   const [online, setOnline] = useState(true);
   const [discoverMode, setDiscoverMode] = useState<DiscoverMode>("near");
   const [viewer, setViewer] = useState<ViewerState | null>(null);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantQueue, setAssistantQueue] = useState<AssistantQueueItem[]>([]);
+  const [assistantQueueOrigin, setAssistantQueueOrigin] = useState<"extension" | "file">("extension");
+  const [assistantPairingCode, setAssistantPairingCode] = useState("");
+  const [assistantChecking, setAssistantChecking] = useState(false);
+  const [assistantImporting, setAssistantImporting] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
+  const assistantImportRef = useRef<HTMLInputElement>(null);
+  const assistantQueueRef = useRef<AssistantQueueItem[]>([]);
+  const assistantQueueOriginRef = useRef<"extension" | "file">("extension");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const assistantCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -360,6 +529,13 @@ export function OurChoiceApp() {
           const parsed: unknown = JSON.parse(saved);
           const normalized = normalizeAppData(parsed);
           if (normalized) setData(normalized);
+        }
+        const assistantSaved = window.localStorage.getItem(ASSISTANT_STORAGE_KEY);
+        if (assistantSaved) {
+          const parsed = JSON.parse(assistantSaved) as { pairingCode?: unknown };
+          if (typeof parsed.pairingCode === "string") {
+            setAssistantPairingCode(parsed.pairingCode.slice(0, 160));
+          }
         }
       } catch {
         // A malformed local backup should never prevent the app from opening.
@@ -377,6 +553,69 @@ export function OurChoiceApp() {
       // The current in-memory session remains usable if the browser quota is full.
     }
   }, [data, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      if (assistantPairingCode) {
+        window.localStorage.setItem(
+          ASSISTANT_STORAGE_KEY,
+          JSON.stringify({ pairingCode: assistantPairingCode }),
+        );
+      } else {
+        window.localStorage.removeItem(ASSISTANT_STORAGE_KEY);
+      }
+    } catch {
+      // Pairing remains usable for this tab if local storage is unavailable.
+    }
+  }, [assistantPairingCode, hydrated]);
+
+  useEffect(() => {
+    function requestQueue() {
+      if (!assistantPairingCode) return;
+      window.postMessage(
+        {
+          source: "our-choice-app",
+          type: "OUR_CHOICE_PULL_QUEUE",
+          requestId: createId("assistant-request"),
+          pairingCode: assistantPairingCode,
+        },
+        window.location.origin,
+      );
+    }
+
+    function handleAssistantMessage(event: MessageEvent) {
+      if (event.source !== window || event.origin !== window.location.origin) return;
+      if (event.data?.source !== "our-choice-extension") return;
+      if (event.data.type === "OUR_CHOICE_EXTENSION_READY") {
+        requestQueue();
+        return;
+      }
+      if (event.data.type !== "OUR_CHOICE_QUEUE_RESPONSE") return;
+      if (assistantCheckTimer.current) clearTimeout(assistantCheckTimer.current);
+      setAssistantChecking(false);
+      const response = event.data.response as { ok?: boolean; items?: unknown; error?: string } | undefined;
+      if (!response?.ok) {
+        if (response?.error) showToast({ message: response.error });
+        return;
+      }
+      const items = normalizeAssistantQueue(response.items);
+      if (assistantQueueOriginRef.current === "file" && assistantQueueRef.current.length) return;
+      assistantQueueRef.current = items;
+      assistantQueueOriginRef.current = "extension";
+      setAssistantQueue(items);
+      setAssistantQueueOrigin("extension");
+      if (items.length) setAssistantOpen(true);
+    }
+
+    window.addEventListener("message", handleAssistantMessage);
+    window.addEventListener("focus", requestQueue);
+    if (hydrated) requestQueue();
+    return () => {
+      window.removeEventListener("message", handleAssistantMessage);
+      window.removeEventListener("focus", requestQueue);
+    };
+  }, [assistantPairingCode, hydrated]);
 
   useEffect(() => {
     function handleStorage(event: StorageEvent) {
@@ -423,6 +662,7 @@ export function OurChoiceApp() {
   useEffect(() => {
     return () => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
+      if (assistantCheckTimer.current) clearTimeout(assistantCheckTimer.current);
     };
   }, []);
 
@@ -1074,6 +1314,339 @@ export function OurChoiceApp() {
     }
   }
 
+  function generateAssistantPairingCode() {
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    const code = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    setAssistantPairingCode(code);
+    showToast({ message: "新的浏览器助手配对码已生成" });
+  }
+
+  async function copyAssistantPairingCode() {
+    if (!assistantPairingCode) return;
+    try {
+      await navigator.clipboard.writeText(assistantPairingCode);
+      showToast({ message: "配对码已复制，请粘贴到扩展连接设置" });
+    } catch {
+      showToast({ message: "无法自动复制，请手动选择配对码" });
+    }
+  }
+
+  function revokeAssistantPairing() {
+    setAssistantPairingCode("");
+    assistantQueueRef.current = [];
+    assistantQueueOriginRef.current = "extension";
+    setAssistantQueue([]);
+    setAssistantOpen(false);
+    showToast({ message: "浏览器助手配对已撤销" });
+  }
+
+  function checkAssistantQueue() {
+    if (!assistantPairingCode) {
+      setSettingsOpen(true);
+      showToast({ message: "请先在设置中生成浏览器助手配对码" });
+      return;
+    }
+    setAssistantChecking(true);
+    window.postMessage(
+      {
+        source: "our-choice-app",
+        type: "OUR_CHOICE_PULL_QUEUE",
+        requestId: createId("assistant-request"),
+        pairingCode: assistantPairingCode,
+      },
+      window.location.origin,
+    );
+    if (assistantCheckTimer.current) clearTimeout(assistantCheckTimer.current);
+    assistantCheckTimer.current = setTimeout(() => {
+      setAssistantChecking(false);
+      showToast({ message: "没有收到扩展响应，请确认已安装、启用并填写相同配对码" });
+    }, 1_800);
+  }
+
+  function acknowledgeAssistantQueue(ids: string[]) {
+    if (!ids.length || !assistantPairingCode) return;
+    window.postMessage(
+      {
+        source: "our-choice-app",
+        type: "OUR_CHOICE_ACK_QUEUE",
+        requestId: createId("assistant-ack"),
+        pairingCode: assistantPairingCode,
+        ids,
+      },
+      window.location.origin,
+    );
+  }
+
+  async function importAssistantJson(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as { version?: unknown; items?: unknown };
+      const items = normalizeAssistantQueue(parsed.items);
+      if (Number(parsed.version) !== 1 || !items.length) throw new Error("invalid");
+      assistantQueueRef.current = items;
+      assistantQueueOriginRef.current = "file";
+      setAssistantQueue(items);
+      setAssistantQueueOrigin("file");
+      setSettingsOpen(false);
+      setAssistantOpen(true);
+    } catch {
+      showToast({ message: "没有认出这个浏览器助手导出文件" });
+    }
+  }
+
+  async function processAssistantImport(selection: AssistantImportSelection) {
+    if (assistantImporting) return;
+    setAssistantImporting(true);
+    const selectedClipIds = new Set(selection.clipIds);
+    const selectedSourceKeys = new Set(selection.sourceKeys);
+    const allQueueIds = assistantQueue.map((item) => item.id);
+    const failedQueueIds = new Set<string>();
+
+    const sourceRequests: Array<{
+      queueId: string;
+      key: string;
+      candidate: AssistantSourceCandidate;
+      batchId?: string;
+    }> = [];
+    for (const item of assistantQueue) {
+      if (item.kind === "source") {
+        const key = `${item.id}:${comparableSourceUrl(item.candidate.url)}`;
+        if (selectedSourceKeys.has(key)) {
+          sourceRequests.push({ queueId: item.id, key, candidate: item.candidate });
+        }
+      }
+      if (item.kind === "follow-batch") {
+        for (const candidate of item.candidates) {
+          const key = `${item.id}:${comparableSourceUrl(candidate.url)}`;
+          if (selectedSourceKeys.has(key)) {
+            sourceRequests.push({ queueId: item.id, key, candidate, batchId: item.id });
+          }
+        }
+      }
+    }
+
+    const existingSourceUrls = new Set(
+      data.sources.filter((source) => !source.archived).map((source) => comparableSourceUrl(source.url)),
+    );
+    const uniqueRequests = Array.from(
+      new Map(
+        sourceRequests
+          .filter((request) => !existingSourceUrls.has(comparableSourceUrl(request.candidate.url)))
+          .map((request) => [comparableSourceUrl(request.candidate.url), request]),
+      ).values(),
+    );
+    const preparedSources: Source[] = [];
+    let requestIndex = 0;
+    const workerCount = Math.min(3, uniqueRequests.length);
+
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (requestIndex < uniqueRequests.length) {
+          const request = uniqueRequests[requestIndex];
+          requestIndex += 1;
+          try {
+            let preview = await fetchPreview(request.candidate.url, 3);
+            if (preview.mode === "select") {
+              const preferred =
+                preview.options?.find((option) => /投稿|视频/.test(option.title)) ??
+                preview.options?.[0];
+              if (!preferred) throw new Error("没有可用的订阅范围");
+              preview = await fetchPreview(request.candidate.url, 3, [preferred.id]);
+            }
+            if (preview.mode === "select") throw new Error("仍需选择订阅范围");
+            const baselineAt = preview.fetchedAt ?? new Date().toISOString();
+            const sourceId = createId("source");
+            const name = request.candidate.name || preview.source.title;
+            const source: Source = {
+              id: sourceId,
+              name,
+              description:
+                preview.source.description ||
+                (preview.mode === "live" ? "通过浏览器助手导入的可同步来源" : "通过浏览器助手导入的平台链接"),
+              platform: preview.source.kind,
+              url:
+                preview.source.siteUrl ||
+                preview.source.profileUrl ||
+                preview.source.refreshUrl ||
+                preview.source.feedUrl ||
+                request.candidate.url,
+              feedUrl: preview.source.feedUrl,
+              refreshUrl: preview.source.refreshUrl,
+              provider: preview.source.provider,
+              rsshubSelection: preview.source.rsshubSelection,
+              rsshubSelections: preview.source.rsshubSelections,
+              manualSubscription: preview.source.manualSubscription,
+              bilibiliOpenMode: preview.source.kind === "bilibili" ? "embedded" : undefined,
+              initials: name.slice(0, 1),
+              tone: TONES[(data.sources.length + preparedSources.length) % TONES.length],
+              enabled: true,
+              lastSyncLabel: preview.mode === "live" ? "刚刚" : "链接模式",
+              unreadCount: 0,
+              addedAt: baselineAt,
+              baselineAt,
+              importedFrom: "browser-extension",
+              externalId: request.candidate.externalId,
+              importBatchId: request.batchId,
+            };
+            source.knownItemIds =
+              preview.mode === "live"
+                ? normalizePreviewItems(source, preview.items, {
+                    isNew: false,
+                    discoveredAt: baselineAt,
+                  }).map((item) => item.id)
+                : [];
+            preparedSources.push(source);
+          } catch {
+            failedQueueIds.add(request.queueId);
+          }
+        }
+      }),
+    );
+
+    const selectedClips = assistantQueue.filter(
+      (item): item is Extract<AssistantQueueItem, { kind: "clip" }> =>
+        item.kind === "clip" && selectedClipIds.has(item.id),
+    );
+    const ownedCollectionIds = new Set(
+      data.collections.filter((collection) => collection.owned).map((collection) => collection.id),
+    );
+    for (const queued of selectedClips) {
+      if (!ownedCollectionIds.has(selection.destinations[queued.id])) {
+        failedQueueIds.add(queued.id);
+      }
+    }
+
+    let duplicateCount = sourceRequests.length - uniqueRequests.length;
+    const seenClipUrls = new Set(data.items.map((item) => comparableSourceUrl(item.url)));
+    let savedClips = 0;
+    for (const queued of selectedClips) {
+      if (failedQueueIds.has(queued.id)) continue;
+      const key = comparableSourceUrl(queued.page.url);
+      if (seenClipUrls.has(key)) duplicateCount += 1;
+      else {
+        seenClipUrls.add(key);
+        savedClips += 1;
+      }
+    }
+    const preparedSourceUrls = new Set(existingSourceUrls);
+    const sourcesToSave = preparedSources.filter((source) => {
+      const key = comparableSourceUrl(source.url);
+      if (preparedSourceUrls.has(key)) {
+        duplicateCount += 1;
+        return false;
+      }
+      preparedSourceUrls.add(key);
+      return true;
+    });
+    const savedSources = sourcesToSave.length;
+
+    setData((current) => {
+      const sources = [...current.sources];
+      const items = [...current.items];
+      const collections = current.collections.map((collection) => ({
+        ...collection,
+        itemIds: [...collection.itemIds],
+      }));
+
+      let clipSource = sources.find((source) => source.id === CLIP_SOURCE_ID);
+      if (savedClips > 0 && !clipSource) {
+        clipSource = {
+          id: CLIP_SOURCE_ID,
+          name: "网页剪藏",
+          description: "通过自选浏览器助手主动保存的网页",
+          platform: "web",
+          url: "#",
+          initials: "藏",
+          tone: "ink",
+          enabled: false,
+          archived: true,
+          isSystem: true,
+          lastSyncLabel: "本地收藏",
+          unreadCount: 0,
+          importedFrom: "browser-extension",
+        };
+        sources.push(clipSource);
+      }
+
+      for (const queued of selectedClips) {
+        if (failedQueueIds.has(queued.id)) continue;
+        const destinationId = selection.destinations[queued.id];
+        const target = collections.find((collection) => collection.id === destinationId && collection.owned);
+        if (!target) continue;
+        const comparable = comparableSourceUrl(queued.page.url);
+        let itemIndex = items.findIndex((candidate) => comparableSourceUrl(candidate.url) === comparable);
+        let item = itemIndex >= 0 ? items[itemIndex] : undefined;
+        if (!item) {
+          if (!clipSource) continue;
+          const capturedAt = Number.isFinite(new Date(queued.capturedAt).getTime())
+            ? queued.capturedAt
+            : new Date().toISOString();
+          item = {
+            id: `clip-${stableKey(comparable)}`,
+            sourceId: CLIP_SOURCE_ID,
+            title: queued.page.title,
+            summary: queued.page.selection || queued.page.description || "通过浏览器助手保存的网页。",
+            type: queued.page.contentType,
+            url: queued.page.url,
+            publishedAt: capturedAt,
+            publishedLabel: "刚刚收藏",
+            dateGroup: dateGroup(capturedAt),
+            duration: queued.page.selection ? "选中文字" : "网页收藏",
+            read: false,
+            isNew: false,
+            discoveredAt: capturedAt,
+            capturedAt,
+            selectionText: queued.page.selection,
+            capturedFrom: "browser-extension",
+            thumbnailUrl: queued.page.imageUrl,
+            tone: "ink",
+            visualLabel: queued.page.contentType === "video" ? "WATCH / SAVED" : queued.page.contentType === "podcast" ? "LISTEN / SAVED" : "READ / SAVED",
+            collectionIds: [],
+          };
+          items.unshift(item);
+          itemIndex = 0;
+        }
+        if (!item.collectionIds.includes(target.id)) {
+          item = { ...item, collectionIds: [...item.collectionIds, target.id] };
+          items[itemIndex] = item;
+        }
+        if (!target.itemIds.includes(item.id)) target.itemIds.unshift(item.id);
+        target.updatedLabel = "刚刚";
+      }
+
+      const currentUrls = new Set(
+        sources.filter((source) => !source.archived).map((source) => comparableSourceUrl(source.url)),
+      );
+      for (const source of sourcesToSave) {
+        const key = comparableSourceUrl(source.url);
+        if (currentUrls.has(key)) continue;
+        currentUrls.add(key);
+        sources.push(source);
+      }
+
+      return { ...current, sources, items, collections };
+    });
+
+    const acknowledgedIds = allQueueIds.filter((id) => !failedQueueIds.has(id));
+    if (assistantQueueOrigin === "extension") acknowledgeAssistantQueue(acknowledgedIds);
+    setAssistantQueue((current) => {
+      const next = current.filter((item) => !acknowledgedIds.includes(item.id));
+      assistantQueueRef.current = next;
+      if (!next.length) assistantQueueOriginRef.current = "extension";
+      return next;
+    });
+    if (acknowledgedIds.length === allQueueIds.length) setAssistantQueueOrigin("extension");
+    setAssistantImporting(false);
+    if (!failedQueueIds.size) setAssistantOpen(false);
+    if (savedSources) setView("subscriptions");
+    showToast({
+      message: `已收藏 ${savedClips} 条、订阅 ${savedSources} 个；跳过 ${duplicateCount} 个重复项${failedQueueIds.size ? `，${failedQueueIds.size} 组待重试` : ""}`,
+    });
+  }
+
   function requestClearAll() {
     setSettingsOpen(false);
     setConfirmState({
@@ -1313,6 +1886,7 @@ export function OurChoiceApp() {
                 totalUnread={unreadCount}
                 syncing={syncing}
                 onAdd={() => setAddOpen(true)}
+                onAssistant={checkAssistantQueue}
                 onRefresh={() => void refreshSources()}
                 onRefreshSource={(id) => void refreshSources([id])}
                 onToggleSource={toggleSource}
@@ -1541,9 +2115,16 @@ export function OurChoiceApp() {
       {settingsOpen && (
         <SettingsModal
           data={data}
+          assistantPairingCode={assistantPairingCode}
+          assistantChecking={assistantChecking}
           onClose={() => setSettingsOpen(false)}
           onExport={exportData}
           onImport={() => importRef.current?.click()}
+          onGenerateAssistantCode={generateAssistantPairingCode}
+          onCopyAssistantCode={() => void copyAssistantPairingCode()}
+          onRevokeAssistantCode={revokeAssistantPairing}
+          onCheckAssistant={checkAssistantQueue}
+          onImportAssistant={() => assistantImportRef.current?.click()}
           onClear={requestClearAll}
           onToggleMatching={() =>
             setData((current) => ({
@@ -1581,6 +2162,16 @@ export function OurChoiceApp() {
         />
       )}
 
+      {assistantOpen && (
+        <BrowserAssistantModal
+          queue={assistantQueue}
+          data={data}
+          importing={assistantImporting}
+          onClose={() => setAssistantOpen(false)}
+          onConfirm={(selection) => void processAssistantImport(selection)}
+        />
+      )}
+
       {confirmState && (
         <ConfirmModal state={confirmState} onClose={() => setConfirmState(null)} />
       )}
@@ -1591,6 +2182,13 @@ export function OurChoiceApp() {
         type="file"
         accept="application/json,.json"
         onChange={(event) => void importData(event)}
+      />
+      <input
+        ref={assistantImportRef}
+        className="sr-only"
+        type="file"
+        accept="application/json,.json"
+        onChange={(event) => void importAssistantJson(event)}
       />
 
       <div className={`toast ${toast ? "is-visible" : ""}`} aria-live="polite" aria-atomic="true">
@@ -2202,6 +2800,7 @@ function SubscriptionsView({
   totalUnread,
   syncing,
   onAdd,
+  onAssistant,
   onRefresh,
   onRefreshSource,
   onToggleSource,
@@ -2214,6 +2813,7 @@ function SubscriptionsView({
   totalUnread: number;
   syncing: boolean;
   onAdd: () => void;
+  onAssistant: () => void;
   onRefresh: () => void;
   onRefreshSource: (id: string) => void;
   onToggleSource: (id: string) => void;
@@ -2236,6 +2836,9 @@ function SubscriptionsView({
           <p>只有你主动选择的来源，才会进入今日。</p>
         </div>
         <div className="heading-actions">
+          <button className="secondary-button" type="button" onClick={onAssistant}>
+            <Bookmark size={17} /> 浏览器助手
+          </button>
           <button className="secondary-button" type="button" onClick={onRefresh} disabled={syncing}>
             <RefreshCw className={syncing ? "is-spinning" : ""} size={17} />
             {syncing ? "正在更新" : "更新全部"}
@@ -3631,19 +4234,244 @@ function SuggestionModal({
   );
 }
 
+function BrowserAssistantModal({
+  queue,
+  data,
+  importing,
+  onClose,
+  onConfirm,
+}: {
+  queue: AssistantQueueItem[];
+  data: AppData;
+  importing: boolean;
+  onClose: () => void;
+  onConfirm: (selection: AssistantImportSelection) => void;
+}) {
+  const clipItems = queue.filter(
+    (item): item is Extract<AssistantQueueItem, { kind: "clip" }> => item.kind === "clip",
+  );
+  const laterCollection = data.collections.find((collection) => collection.isSystem);
+  const userCollections = data.collections.filter(
+    (collection) => collection.owned && !collection.isSystem,
+  );
+  const existingUrls = new Set(
+    data.sources.filter((source) => !source.archived).map((source) => comparableSourceUrl(source.url)),
+  );
+  const sourceRows = queue.flatMap((item) => {
+    if (item.kind === "source") {
+      const normalized = comparableSourceUrl(item.candidate.url);
+      return [{
+        key: `${item.id}:${normalized}`,
+        queueId: item.id,
+        candidate: item.candidate,
+        platform: "网页来源",
+        duplicate: existingUrls.has(normalized),
+        newlyFollowed: true,
+      }];
+    }
+    if (item.kind !== "follow-batch") return [];
+    const addedIds = new Set(item.added.map((candidate) => candidate.externalId));
+    return item.candidates.map((candidate) => {
+      const normalized = comparableSourceUrl(candidate.url);
+      return {
+        key: `${item.id}:${normalized}`,
+        queueId: item.id,
+        candidate,
+        platform: "B站",
+        duplicate: existingUrls.has(normalized),
+        newlyFollowed: item.previousCount === 0 || addedIds.has(candidate.externalId),
+      };
+    });
+  });
+  const removed = queue.flatMap((item) => item.kind === "follow-batch" ? item.removed : []);
+  const [selectedClipIds, setSelectedClipIds] = useState(() => clipItems.map((item) => item.id));
+  const [selectedSourceKeys, setSelectedSourceKeys] = useState(() =>
+    sourceRows
+      .filter((row) => !row.duplicate && row.newlyFollowed)
+      .map((row) => row.key),
+  );
+  const [destinations, setDestinations] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      clipItems.map((item) => [
+        item.id,
+        item.destination === "later"
+          ? laterCollection?.id ?? ""
+          : userCollections[0]?.id ?? "",
+      ]),
+    ),
+  );
+
+  const missingDestination = clipItems.some(
+    (item) => selectedClipIds.includes(item.id) && !destinations[item.id],
+  );
+  const selectedCount = selectedClipIds.length + selectedSourceKeys.length;
+
+  return (
+    <Modal
+      title="来自浏览器助手"
+      description="先检查再保存；只有确认的内容会写入这台设备。"
+      onClose={onClose}
+      size="large"
+    >
+      <div className="modal-content assistant-import-content">
+        {clipItems.length > 0 && (
+          <section className="assistant-import-section">
+            <div className="assistant-import-heading">
+              <div><strong>网页收藏</strong><p>{clipItems.length} 条待处理内容</p></div>
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedClipIds(
+                    selectedClipIds.length === clipItems.length ? [] : clipItems.map((item) => item.id),
+                  )
+                }
+              >
+                {selectedClipIds.length === clipItems.length ? "取消全选" : "全选"}
+              </button>
+            </div>
+            <div className="assistant-import-list">
+              {clipItems.map((item) => {
+                const checked = selectedClipIds.includes(item.id);
+                const destinationOptions = item.destination === "later"
+                  ? data.collections.filter((collection) => collection.id === laterCollection?.id)
+                  : userCollections;
+                return (
+                  <article className={checked ? "is-selected" : ""} key={item.id}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={importing}
+                        onChange={(event) =>
+                          setSelectedClipIds((current) =>
+                            event.target.checked
+                              ? [...current, item.id]
+                              : current.filter((id) => id !== item.id),
+                          )
+                        }
+                      />
+                      <span className="assistant-check">{checked && <Check size={13} />}</span>
+                      <span><strong>{item.page.title}</strong><small>{item.page.siteName ?? new URL(item.page.url).hostname}</small></span>
+                    </label>
+                    <select
+                      aria-label={`选择「${item.page.title}」的合集`}
+                      value={destinations[item.id] ?? ""}
+                      disabled={!checked || importing}
+                      onChange={(event) => setDestinations((current) => ({ ...current, [item.id]: event.target.value }))}
+                    >
+                      <option value="">选择合集</option>
+                      {destinationOptions.map((collection) => (
+                        <option key={collection.id} value={collection.id}>{collection.title}</option>
+                      ))}
+                    </select>
+                    {item.destination === "collection" && !userCollections.length && (
+                      <p className="field-error">请先关闭窗口并新建一个合集，队列不会丢失。</p>
+                    )}
+                    {item.page.selection && <blockquote>{item.page.selection}</blockquote>}
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {sourceRows.length > 0 && (
+          <section className="assistant-import-section">
+            <div className="assistant-import-heading">
+              <div><strong>订阅来源</strong><p>{sourceRows.length} 个候选，自动排除已有来源</p></div>
+              <button
+                type="button"
+                onClick={() => {
+                  const available = sourceRows.filter((row) => !row.duplicate).map((row) => row.key);
+                  setSelectedSourceKeys(selectedSourceKeys.length === available.length ? [] : available);
+                }}
+              >
+                全选可导入项
+              </button>
+            </div>
+            <div className="assistant-source-list">
+              {sourceRows.map((row) => {
+                const checked = selectedSourceKeys.includes(row.key);
+                return (
+                  <label className={checked ? "is-selected" : ""} key={row.key}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={row.duplicate || importing}
+                      onChange={(event) =>
+                        setSelectedSourceKeys((current) =>
+                          event.target.checked
+                            ? [...current, row.key]
+                            : current.filter((key) => key !== row.key),
+                        )
+                      }
+                    />
+                    <span className="assistant-check">{checked && <Check size={13} />}</span>
+                    <span><strong>{row.candidate.name}</strong><small>{row.platform} · {row.candidate.url}</small></span>
+                    <em>{row.duplicate ? "已订阅" : row.newlyFollowed ? "新增" : "仍在关注"}</em>
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {removed.length > 0 && (
+          <section className="assistant-removed-note">
+            <ShieldCheck size={18} />
+            <div>
+              <strong>{removed.length} 个账号在本轮不再出现</strong>
+              <p>取消关注只供确认，不会自动删除：{removed.slice(0, 6).map((item) => item.name).join("、")}{removed.length > 6 ? "…" : ""}</p>
+            </div>
+          </section>
+        )}
+      </div>
+      <div className="modal-footer">
+        <p><LockKeyhole size={13} /> 队列与配对信息只保存在本机</p>
+        <div>
+          <button className="quiet-button" type="button" onClick={onClose} disabled={importing}>稍后处理</button>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={importing || selectedCount === 0 || missingDestination}
+            onClick={() => onConfirm({ clipIds: selectedClipIds, sourceKeys: selectedSourceKeys, destinations })}
+          >
+            {importing ? <RefreshCw className="is-spinning" size={16} /> : <CheckCheck size={16} />}
+            {importing ? "正在导入" : `确认导入 ${selectedCount} 项`}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function SettingsModal({
   data,
+  assistantPairingCode,
+  assistantChecking,
   onClose,
   onExport,
   onImport,
+  onGenerateAssistantCode,
+  onCopyAssistantCode,
+  onRevokeAssistantCode,
+  onCheckAssistant,
+  onImportAssistant,
   onClear,
   onToggleMatching,
   onToggleCollectionUpdates,
 }: {
   data: AppData;
+  assistantPairingCode: string;
+  assistantChecking: boolean;
   onClose: () => void;
   onExport: () => void;
   onImport: () => void;
+  onGenerateAssistantCode: () => void;
+  onCopyAssistantCode: () => void;
+  onRevokeAssistantCode: () => void;
+  onCheckAssistant: () => void;
+  onImportAssistant: () => void;
   onClear: () => void;
   onToggleMatching: () => void;
   onToggleCollectionUpdates: () => void;
@@ -3671,6 +4499,51 @@ function SettingsModal({
               自选只记录站点地址和最近打开时间，不读取、保存或导出密码与 Cookie。登录状态能否在内嵌页面复用，由浏览器隐私设置和来源平台共同决定。
             </p>
           </div>
+        </section>
+
+        <section className="settings-section assistant-settings-section">
+          <div className="settings-title-row">
+            <div>
+              <h3>浏览器助手</h3>
+              <p>收藏当前网页、订阅来源，或从 B站关注页批量导入。</p>
+            </div>
+            <span>{assistantPairingCode ? "已生成配对码" : "尚未配对"}</span>
+          </div>
+          <div className="assistant-privacy-note">
+            <ShieldCheck size={18} />
+            <p>扩展不会读取密码或 Cookie；只有你主动点击后，公开页面信息才会进入本地待处理队列。</p>
+          </div>
+          {assistantPairingCode ? (
+            <div className="assistant-pairing-panel">
+              <label htmlFor="assistant-pairing-code">配对码</label>
+              <div>
+                <input id="assistant-pairing-code" value={assistantPairingCode} readOnly />
+                <button type="button" onClick={onCopyAssistantCode}>复制</button>
+              </div>
+              <p>将配对码粘贴到扩展的连接设置。它独立保存在本机，不会进入 JSON 备份。</p>
+            </div>
+          ) : (
+            <button className="secondary-button assistant-generate-button" type="button" onClick={onGenerateAssistantCode}>
+              <Link2 size={16} /> 生成本地配对码
+            </button>
+          )}
+          <div className="assistant-setting-actions">
+            <button type="button" onClick={onCheckAssistant} disabled={assistantChecking || !assistantPairingCode}>
+              <RefreshCw className={assistantChecking ? "is-spinning" : ""} size={16} />
+              {assistantChecking ? "正在检查" : "检查待处理内容"}
+            </button>
+            <button type="button" onClick={onImportAssistant}>
+              <Upload size={16} /> 导入助手 JSON
+            </button>
+            {assistantPairingCode && (
+              <button className="danger-text-button" type="button" onClick={onRevokeAssistantCode}>
+                重新配对 / 撤销
+              </button>
+            )}
+          </div>
+          <p className="assistant-install-note">
+            开发版扩展位于仓库 <code>browser-extension/</code>，在 Chrome 或 Edge 中选择“加载已解压的扩展程序”。
+          </p>
         </section>
 
         <section className="settings-section">
