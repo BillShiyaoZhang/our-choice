@@ -25,6 +25,12 @@ export interface Source {
   archived?: boolean;
   lastSyncLabel: string;
   unreadCount: number;
+  /** When this source joined Our Choice. Content at or before this baseline is history. */
+  addedAt?: string;
+  baselineAt?: string;
+  /** Feed item ids observed at the baseline or during later refreshes. */
+  knownItemIds?: string[];
+  lastOpenedAt?: string;
   isDemo?: boolean;
 }
 
@@ -40,6 +46,10 @@ export interface ContentItem {
   dateGroup: "今天" | "昨天" | "更早";
   duration: string;
   read: boolean;
+  /** New means discovered after the source baseline; viewing clears the effective new state. */
+  isNew?: boolean;
+  discoveredAt?: string;
+  viewedAt?: string;
   thumbnailUrl?: string;
   tone: VisualTone;
   visualLabel: string;
@@ -81,11 +91,20 @@ export interface AppSettings {
   welcomeDismissed: boolean;
 }
 
+export interface PlatformSession {
+  origin: string;
+  platform: Platform;
+  firstOpenedAt: string;
+  lastOpenedAt: string;
+}
+
 export interface AppData {
-  version: 1;
+  version: 2;
   sources: Source[];
   items: ContentItem[];
   collections: Collection[];
+  /** Non-sensitive metadata only. Credentials and cookies remain browser-managed. */
+  platformSessions: PlatformSession[];
   settings: AppSettings;
 }
 
@@ -384,10 +403,11 @@ export const suggestedCollections: SuggestedCollection[] = [
 ];
 
 export const defaultAppData: AppData = {
-  version: 1,
+  version: 2,
   sources: seedSources,
   items: seedItems,
   collections: seedCollections,
+  platformSessions: [],
   settings: {
     localMatching: true,
     includeCollectionUpdates: true,

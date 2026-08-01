@@ -382,6 +382,7 @@ function parseFeed(xml: string, feedUrl: string, limit: number) {
         thumbnailUrl: extractImage(entry, feedUrl),
         enclosureUrl,
         publishedAt: publishedAt || new Date().toISOString(),
+        publishedAtReliable: Boolean(publishedAt),
         duration:
           duration || (type === "article" ? "阅读" : type === "podcast" ? "收听" : "观看"),
       },
@@ -438,13 +439,13 @@ function bilibiliPreview(url: URL) {
       title: mid ? `B站创作者 ${mid}` : isVideo ? "B站视频来源" : "B站订阅",
       mid,
       profileUrl: url.href,
-      description: "链接模式：保留这个来源，并在你需要时前往 B站查看更新。",
+      description: "链接模式：保留这个来源，并在自选的主显示区查看 B站页面。",
     },
     items: [],
     warning: {
       code: "BILIBILI_LINK_ONLY",
       message:
-        "B站暂不提供稳定的匿名订阅接口，因此首版以链接模式保存；如果你有 RSS 转换地址，也可以直接粘贴以获取预览。",
+        "B站暂不提供稳定的匿名订阅接口，因此以站内链接模式保存；如果你有 RSS 转换地址，也可以直接粘贴以获取预览。",
     },
   };
 }

@@ -3,6 +3,7 @@
 /* eslint-disable @next/next/no-img-element -- feed images come from user-selected dynamic RSS sources */
 
 import {
+  ArrowLeft,
   ArrowRight,
   Bookmark,
   Check,
@@ -21,6 +22,7 @@ import {
   Link2,
   LockKeyhole,
   Menu,
+  PanelTopOpen,
   Pause,
   Play,
   Plus,
@@ -54,6 +56,7 @@ import {
   type Collection,
   type ContentItem,
   type ContentType,
+  type PlatformSession,
   type Source,
   type SuggestedCollection,
   type View,
@@ -74,6 +77,7 @@ interface PreviewItem {
   type: ContentType;
   thumbnailUrl?: string;
   publishedAt: string;
+  publishedAtReliable?: boolean;
   duration: string;
 }
 
@@ -91,6 +95,7 @@ interface PreviewSuccess {
     imageUrl?: string;
   };
   items: PreviewItem[];
+  fetchedAt?: string;
   warning?: { code: string; message: string };
 }
 
@@ -115,6 +120,15 @@ interface ConfirmState {
   onConfirm: () => void;
 }
 
+interface ViewerState {
+  kind: "source" | "content";
+  url: string;
+  title: string;
+  sourceName: string;
+  platform: string;
+  returnScrollY: number;
+}
+
 const navItems: Array<{
   id: View;
   label: string;
@@ -127,7 +141,7 @@ const navItems: Array<{
 ];
 
 function cloneDefaultData(): AppData {
-  return JSON.parse(JSON.stringify(defaultAppData)) as AppData;
+  return normalizeAppData(JSON.parse(JSON.stringify(defaultAppData))) ?? defaultAppData;
 }
 
 function createId(prefix: string) {
@@ -173,16 +187,69 @@ function sourceForItem(data: AppData, item: ContentItem) {
   return data.sources.find((source) => source.id === item.sourceId);
 }
 
-function isValidImport(value: unknown): value is AppData {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<AppData>;
-  return (
-    candidate.version === 1 &&
-    Array.isArray(candidate.sources) &&
-    Array.isArray(candidate.items) &&
-    Array.isArray(candidate.collections) &&
-    Boolean(candidate.settings && typeof candidate.settings === "object")
-  );
+function itemIsNew(item: ContentItem) {
+  return !item.read && item.isNew !== false;
+}
+
+function safeExternalUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    if (typeof window !== "undefined" && url.origin === window.location.origin) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeAppData(value: unknown): AppData | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    ![1, 2].includes(Number(candidate.version)) ||
+    !Array.isArray(candidate.sources) ||
+    !Array.isArray(candidate.items) ||
+    !Array.isArray(candidate.collections) ||
+    !candidate.settings ||
+    typeof candidate.settings !== "object"
+  ) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const items = (candidate.items as ContentItem[]).map((item) => ({
+    ...item,
+    isNew: item.isNew ?? !item.read,
+    discoveredAt: item.discoveredAt ?? item.publishedAt ?? now,
+    viewedAt: item.viewedAt ?? (item.read ? item.publishedAt ?? now : undefined),
+  }));
+  const sources = (candidate.sources as Source[]).map((source) => ({
+    ...source,
+    addedAt: source.addedAt ?? now,
+    baselineAt: source.baselineAt ?? now,
+    knownItemIds:
+      source.knownItemIds ??
+      items.filter((item) => item.sourceId === source.id).map((item) => item.id),
+  }));
+  const settings = candidate.settings as AppData["settings"];
+
+  return {
+    version: 2,
+    sources,
+    items,
+    collections: candidate.collections as Collection[],
+    platformSessions: Array.isArray(candidate.platformSessions)
+      ? (candidate.platformSessions as PlatformSession[])
+      : [],
+    settings: {
+      localMatching: Boolean(settings.localMatching),
+      includeCollectionUpdates: settings.includeCollectionUpdates !== false,
+      hiddenSuggestionIds: Array.isArray(settings.hiddenSuggestionIds)
+        ? settings.hiddenSuggestionIds
+        : [],
+      welcomeDismissed: Boolean(settings.welcomeDismissed),
+    },
+  };
 }
 
 export function OurChoiceApp() {
@@ -205,6 +272,7 @@ export function OurChoiceApp() {
   const [syncing, setSyncing] = useState(false);
   const [online, setOnline] = useState(true);
   const [discoverMode, setDiscoverMode] = useState<DiscoverMode>("near");
+  const [viewer, setViewer] = useState<ViewerState | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -215,7 +283,8 @@ export function OurChoiceApp() {
         const saved = window.localStorage.getItem(STORAGE_KEY);
         if (saved) {
           const parsed: unknown = JSON.parse(saved);
-          if (isValidImport(parsed)) setData(parsed);
+          const normalized = normalizeAppData(parsed);
+          if (normalized) setData(normalized);
         }
       } catch {
         // A malformed local backup should never prevent the app from opening.
@@ -239,7 +308,8 @@ export function OurChoiceApp() {
       if (event.key !== STORAGE_KEY || !event.newValue) return;
       try {
         const parsed: unknown = JSON.parse(event.newValue);
-        if (isValidImport(parsed)) setData(parsed);
+        const normalized = normalizeAppData(parsed);
+        if (normalized) setData(normalized);
       } catch {
         // Ignore invalid data written by another tab.
       }
@@ -293,7 +363,7 @@ export function OurChoiceApp() {
     return data.items.filter((item) => activeIds.has(item.sourceId));
   }, [activeSources, data.items]);
 
-  const unreadCount = inboxItems.filter((item) => !item.read).length;
+  const unreadCount = inboxItems.filter(itemIsNew).length;
   const laterCollection = data.collections.find((collection) => collection.isSystem);
   const laterCount = laterCollection?.itemIds.length ?? 0;
 
@@ -316,27 +386,111 @@ export function OurChoiceApp() {
   }
 
   function goTo(next: View) {
+    setViewer(null);
     setView(next);
     setMobileMenuOpen(false);
     setQuery("");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function rememberPlatformSession(source: Source, url: string) {
+    let origin: string;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      return;
+    }
+    const openedAt = new Date().toISOString();
+    setData((current) => {
+      const existing = current.platformSessions.find((session) => session.origin === origin);
+      const nextSession: PlatformSession = existing
+        ? { ...existing, platform: source.platform, lastOpenedAt: openedAt }
+        : {
+            origin,
+            platform: source.platform,
+            firstOpenedAt: openedAt,
+            lastOpenedAt: openedAt,
+          };
+      return {
+        ...current,
+        platformSessions: [
+          nextSession,
+          ...current.platformSessions.filter((session) => session.origin !== origin),
+        ],
+        sources: current.sources.map((candidate) =>
+          candidate.id === source.id ? { ...candidate, lastOpenedAt: openedAt } : candidate,
+        ),
+      };
+    });
+  }
+
+  function openSource(source: Source) {
+    const url = safeExternalUrl(source.url);
+    if (!url) {
+      showToast({ message: "这个来源没有可安全打开的公开网页" });
+      return;
+    }
+    rememberPlatformSession(source, url);
+    setQuery("");
+    setViewer({
+      kind: "source",
+      url,
+      title: source.name,
+      sourceName: source.name,
+      platform: platformLabels[source.platform],
+      returnScrollY: window.scrollY,
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function openContent(item: ContentItem) {
+    const source = sourceForItem(data, item);
+    const url = safeExternalUrl(item.url);
+    if (!source || !url) {
+      showToast({ message: "这条内容没有可安全打开的公开网页" });
+      return;
+    }
+    setItemRead(item.id, true);
+    rememberPlatformSession(source, url);
+    setQuery("");
+    setViewer({
+      kind: "content",
+      url,
+      title: item.title,
+      sourceName: source.name,
+      platform: platformLabels[source.platform],
+      returnScrollY: window.scrollY,
+    });
+    setOpenCollectionId(null);
+    setFocusOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function closeViewer() {
+    const returnScrollY = viewer?.returnScrollY ?? 0;
+    setViewer(null);
+    window.requestAnimationFrame(() => window.scrollTo({ top: returnScrollY, behavior: "smooth" }));
+  }
+
   function setItemRead(itemId: string, read: boolean) {
     setData((current) => {
       const item = current.items.find((candidate) => candidate.id === itemId);
       if (!item || item.read === read) return current;
+      const items = current.items.map((candidate) =>
+        candidate.id === itemId
+          ? {
+              ...candidate,
+              read,
+              viewedAt: read ? new Date().toISOString() : undefined,
+            }
+          : candidate,
+      );
       return {
         ...current,
-        items: current.items.map((candidate) =>
-          candidate.id === itemId ? { ...candidate, read } : candidate,
-        ),
+        items,
         sources: current.sources.map((source) =>
           source.id === item.sourceId
-            ? {
-                ...source,
-                unreadCount: Math.max(0, source.unreadCount + (read ? -1 : 1)),
-              }
+            ? { ...source, unreadCount: items.filter((candidate) => candidate.sourceId === source.id && itemIsNew(candidate)).length }
             : source,
         ),
       };
@@ -355,7 +509,7 @@ export function OurChoiceApp() {
   }
 
   function markAllRead() {
-    const changedIds = inboxItems.filter((item) => !item.read).map((item) => item.id);
+    const changedIds = inboxItems.filter(itemIsNew).map((item) => item.id);
     if (!changedIds.length) {
       showToast({ message: "今天的内容已经全部读完" });
       return;
@@ -364,7 +518,9 @@ export function OurChoiceApp() {
     setData((current) => ({
       ...current,
       items: current.items.map((item) =>
-        changedSet.has(item.id) ? { ...item, read: true } : item,
+        changedSet.has(item.id)
+          ? { ...item, read: true, viewedAt: new Date().toISOString() }
+          : item,
       ),
       sources: current.sources.map((source) =>
         source.enabled && !source.archived ? { ...source, unreadCount: 0 } : source,
@@ -377,12 +533,12 @@ export function OurChoiceApp() {
         setData((current) => ({
           ...current,
           items: current.items.map((item) =>
-            changedSet.has(item.id) ? { ...item, read: false } : item,
+            changedSet.has(item.id) ? { ...item, read: false, viewedAt: undefined } : item,
           ),
           sources: current.sources.map((source) => ({
             ...source,
             unreadCount: current.items.filter(
-              (item) => item.sourceId === source.id && changedSet.has(item.id),
+              (item) => item.sourceId === source.id && changedSet.has(item.id) && item.isNew !== false,
             ).length,
           })),
         }));
@@ -535,7 +691,12 @@ export function OurChoiceApp() {
     });
   }
 
-  function normalizePreviewItems(source: Source, items: PreviewItem[]) {
+  function normalizePreviewItems(
+    source: Source,
+    items: PreviewItem[],
+    options: { isNew: boolean; discoveredAt?: string } = { isNew: true },
+  ) {
+    const discoveredAt = options.discoveredAt ?? new Date().toISOString();
     return items.map<ContentItem>((item, index) => ({
       id: `feed-${source.id}-${stableKey(item.upstreamId || item.url || String(index))}`,
       sourceId: source.id,
@@ -548,6 +709,8 @@ export function OurChoiceApp() {
       dateGroup: dateGroup(item.publishedAt),
       duration: item.duration,
       read: false,
+      isNew: options.isNew,
+      discoveredAt,
       thumbnailUrl: item.thumbnailUrl,
       tone: source.tone,
       visualLabel:
@@ -611,14 +774,37 @@ export function OurChoiceApp() {
     const existingUrls = new Set(data.items.map((item) => item.url));
     const prepared = results.map((result) => {
       if (!result.preview || result.preview.mode !== "live") {
-        return { ...result, additions: [] as ContentItem[] };
+        return { ...result, additions: [] as ContentItem[], observedIds: [] as string[] };
       }
-      const normalized = normalizePreviewItems(result.source, result.preview.items);
-      const additions = normalized.filter((item) => !existingUrls.has(item.url));
+      const discoveredAt = result.preview.fetchedAt ?? new Date().toISOString();
+      const normalized = normalizePreviewItems(result.source, result.preview.items, {
+        isNew: false,
+        discoveredAt,
+      });
+      const knownIds = new Set(result.source.knownItemIds ?? []);
+      const addedAt = new Date(result.source.addedAt ?? result.source.baselineAt ?? 0).getTime();
+      const additions = normalized
+        .filter((item) => !knownIds.has(item.id) && !existingUrls.has(item.url))
+        .map((item) => {
+          const normalizedIndex = normalized.findIndex((candidate) => candidate.id === item.id);
+          const previewItem = result.preview?.items[normalizedIndex];
+          const publishedAt = new Date(item.publishedAt).getTime();
+          const hasReliableDate = previewItem?.publishedAtReliable !== false;
+          return {
+            ...item,
+            isNew:
+              hasReliableDate && Number.isFinite(publishedAt)
+                ? publishedAt > addedAt
+                : Boolean(result.source.baselineAt),
+          };
+        });
       for (const item of additions) existingUrls.add(item.url);
-      return { ...result, additions };
+      return { ...result, additions, observedIds: normalized.map((item) => item.id) };
     });
-    const totalNew = prepared.reduce((total, result) => total + result.additions.length, 0);
+    const totalNew = prepared.reduce(
+      (total, result) => total + result.additions.filter(itemIsNew).length,
+      0,
+    );
 
     setData((current) => {
       let items = [...current.items];
@@ -626,7 +812,7 @@ export function OurChoiceApp() {
 
       for (const result of prepared) {
         if (!result.preview || result.preview.mode !== "live") continue;
-        sourceUpdates.set(result.source.id, result.additions.length);
+        sourceUpdates.set(result.source.id, result.additions.filter(itemIsNew).length);
         items = [...result.additions, ...items];
       }
 
@@ -638,7 +824,15 @@ export function OurChoiceApp() {
             ? {
                 ...source,
                 lastSyncLabel: "刚刚",
-                unreadCount: source.unreadCount + (sourceUpdates.get(source.id) ?? 0),
+                unreadCount: items.filter(
+                  (item) => item.sourceId === source.id && itemIsNew(item),
+                ).length,
+                knownItemIds: Array.from(
+                  new Set([
+                    ...(prepared.find((result) => result.source.id === source.id)?.observedIds ?? []),
+                    ...(source.knownItemIds ?? []),
+                  ]),
+                ).slice(0, 500),
               }
             : source,
         ),
@@ -764,8 +958,9 @@ export function OurChoiceApp() {
     if (!file) return;
     try {
       const parsed: unknown = JSON.parse(await file.text());
-      if (!isValidImport(parsed)) throw new Error("invalid");
-      setData(parsed);
+      const normalized = normalizeAppData(parsed);
+      if (!normalized) throw new Error("invalid");
+      setData(normalized);
       setSettingsOpen(false);
       showToast({ message: "备份已导入，本地内容恢复完成" });
     } catch {
@@ -813,7 +1008,7 @@ export function OurChoiceApp() {
   }).format(new Date());
 
   const currentNav = navItems.find((item) => item.id === view) ?? navItems[0];
-  const nextFocusItem = inboxItems.find((item) => !item.read);
+  const nextFocusItem = inboxItems.find(itemIsNew);
 
   return (
     <div className="app-shell" data-hydrated={hydrated ? "true" : "false"}>
@@ -896,7 +1091,7 @@ export function OurChoiceApp() {
             </button>
             <div>
               <span className="topbar-kicker">你的内容空间</span>
-              <strong>{query ? "搜索" : currentNav.label}</strong>
+              <strong>{viewer ? "站内查看" : query ? "搜索" : currentNav.label}</strong>
             </div>
           </div>
 
@@ -932,12 +1127,15 @@ export function OurChoiceApp() {
         )}
 
         <main id="main-content" className="main-content" tabIndex={-1}>
-          {query ? (
+          {viewer ? (
+            <EmbeddedViewer viewer={viewer} onBack={closeViewer} />
+          ) : query ? (
             <SearchResults
               query={query}
               items={searchedItems}
               data={data}
               onMarkRead={markReadWithUndo}
+              onOpen={openContent}
               onToggleLater={toggleLater}
               onSave={openSaveDialog}
               laterCollectionId={laterCollection?.id}
@@ -957,6 +1155,7 @@ export function OurChoiceApp() {
               onRefresh={() => void refreshSources()}
               onMarkAll={markAllRead}
               onMarkRead={markReadWithUndo}
+              onOpen={openContent}
               onToggleLater={toggleLater}
               onSave={openSaveDialog}
               onAdd={() => setAddOpen(true)}
@@ -980,6 +1179,7 @@ export function OurChoiceApp() {
               onRefreshSource={(id) => void refreshSources([id])}
               onToggleSource={toggleSource}
               onRemoveSource={requestRemoveSource}
+              onOpenSource={openSource}
             />
           ) : view === "collections" ? (
             <CollectionsView
@@ -1048,6 +1248,7 @@ export function OurChoiceApp() {
           onConfirm={(preview, name, includeRecent) => {
             const tone = TONES[data.sources.length % TONES.length];
             const sourceId = createId("source");
+            const baselineAt = preview.fetchedAt ?? new Date().toISOString();
             const source: Source = {
               id: sourceId,
               name: name.trim() || preview.source.title,
@@ -1065,11 +1266,21 @@ export function OurChoiceApp() {
               tone,
               enabled: true,
               lastSyncLabel: preview.mode === "live" ? "刚刚" : "链接模式",
-              unreadCount: preview.mode === "live" && includeRecent ? Math.min(3, preview.items.length) : 0,
+              unreadCount: 0,
+              addedAt: baselineAt,
+              baselineAt,
             };
+            const baselineItems =
+              preview.mode === "live"
+                ? normalizePreviewItems(source, preview.items, {
+                    isNew: false,
+                    discoveredAt: baselineAt,
+                  })
+                : [];
+            source.knownItemIds = baselineItems.map((item) => item.id);
             const items =
               preview.mode === "live" && includeRecent
-                ? normalizePreviewItems(source, preview.items.slice(0, 3))
+                ? baselineItems.slice(0, 3)
                 : [];
             setData((current) => ({
               ...current,
@@ -1081,8 +1292,8 @@ export function OurChoiceApp() {
             showToast({
               message:
                 preview.mode === "live"
-                  ? `已订阅「${source.name}」，带回 ${items.length} 条最近内容`
-                  : `已以链接模式保存「${source.name}」`,
+                  ? `已订阅「${source.name}」，保留 ${items.length} 条历史内容（不计入新增）`
+                  : `已保存「${source.name}」，可在站内打开`,
             });
           }}
         />
@@ -1115,7 +1326,7 @@ export function OurChoiceApp() {
           data={data}
           onClose={() => setOpenCollectionId(null)}
           onRemove={requestRemoveCollection}
-          onOpenItem={(item) => markReadWithUndo(item.id)}
+          onOpenItem={openContent}
           onRemoveItem={(itemId, collectionId) => toggleItemInCollection(itemId, collectionId)}
         />
       )}
@@ -1163,9 +1374,10 @@ export function OurChoiceApp() {
         <FocusModal
           item={nextFocusItem}
           source={nextFocusItem ? sourceForItem(data, nextFocusItem) : undefined}
-          remaining={inboxItems.filter((item) => !item.read).length}
+          remaining={inboxItems.filter(itemIsNew).length}
           onClose={() => setFocusOpen(false)}
           onMarkRead={setItemRead}
+          onOpenItem={openContent}
           onDiscover={() => {
             setFocusOpen(false);
             goTo("discover");
@@ -1213,6 +1425,65 @@ export function OurChoiceApp() {
   );
 }
 
+function EmbeddedViewer({ viewer, onBack }: { viewer: ViewerState; onBack: () => void }) {
+  const [reloadKey, setReloadKey] = useState(0);
+
+  return (
+    <section className="embedded-viewer" aria-labelledby="embedded-viewer-title">
+      <header className="viewer-header">
+        <button className="viewer-back" type="button" onClick={onBack}>
+          <ArrowLeft size={18} /> 返回自选
+        </button>
+        <div className="viewer-heading">
+          <div className="viewer-breadcrumb" aria-label="当前位置">
+            <span>自选</span>
+            <ChevronRight size={13} />
+            <span>{viewer.sourceName}</span>
+            {viewer.kind === "content" && (
+              <>
+                <ChevronRight size={13} />
+                <span>具体内容</span>
+              </>
+            )}
+          </div>
+          <h1 id="embedded-viewer-title">{viewer.title}</h1>
+          <p>
+            <ShieldCheck size={14} /> {viewer.platform} 页面在主显示区内加载；登录会话由浏览器按平台规则保留。
+          </p>
+        </div>
+        <div className="viewer-actions">
+          <button className="quiet-button" type="button" onClick={() => setReloadKey((key) => key + 1)}>
+            <RefreshCw size={16} /> 重新加载
+          </button>
+          <a className="quiet-button" href={viewer.url}>
+            无法嵌入时在当前页打开 <ExternalLink size={15} />
+          </a>
+        </div>
+      </header>
+
+      <div className="viewer-frame-shell">
+        <div className="viewer-frame-status">
+          <span className="status-dot" /> 正在安全地连接 {viewer.platform}
+        </div>
+        <iframe
+          key={`${viewer.url}-${reloadKey}`}
+          src={viewer.url}
+          title={`${viewer.title} — ${viewer.platform}`}
+          allow="autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-read; clipboard-write"
+          sandbox="allow-downloads allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"
+          referrerPolicy="strict-origin-when-cross-origin"
+        >
+          你的浏览器不支持内嵌网页。
+        </iframe>
+      </div>
+
+      <p className="viewer-disclosure">
+        某些平台会通过安全策略拒绝被任何网站内嵌。遇到空白或拦截提示时，可使用上方“在当前页打开”，浏览器返回后阅读记录仍会保留。
+      </p>
+    </section>
+  );
+}
+
 function TodayView({
   data,
   items,
@@ -1227,6 +1498,7 @@ function TodayView({
   onRefresh,
   onMarkAll,
   onMarkRead,
+  onOpen,
   onToggleLater,
   onSave,
   onAdd,
@@ -1248,6 +1520,7 @@ function TodayView({
   onRefresh: () => void;
   onMarkAll: () => void;
   onMarkRead: (id: string) => void;
+  onOpen: (item: ContentItem) => void;
   onToggleLater: (id: string) => void;
   onSave: (id: string) => void;
   onAdd: () => void;
@@ -1258,7 +1531,7 @@ function TodayView({
 }) {
   const filteredItems = items.filter(
     (item) =>
-      (typeFilter === "all" || item.type === typeFilter) && (!unreadOnly || !item.read),
+      (typeFilter === "all" || item.type === typeFilter) && (!unreadOnly || itemIsNew(item)),
   );
   const groups = ["今天", "昨天", "更早"] as const;
   const hasDemo = data.items.some((item) => item.isDemo);
@@ -1345,7 +1618,7 @@ function TodayView({
             aria-pressed={unreadOnly}
             onClick={onToggleUnread}
           >
-            <span className="status-dot" /> 只看未读
+            <span className="status-dot" /> 只看新增
           </button>
         </div>
       )}
@@ -1368,6 +1641,7 @@ function TodayView({
                     source={sourceForItem(data, item)}
                     savedForLater={Boolean(laterCollectionId && item.collectionIds.includes(laterCollectionId))}
                     onMarkRead={() => onMarkRead(item.id)}
+                    onOpen={() => onOpen(item)}
                     onToggleLater={() => onToggleLater(item.id)}
                     onSave={() => onSave(item.id)}
                   />
@@ -1380,7 +1654,7 @@ function TodayView({
         <EmptyState
           icon={SlidersHorizontal}
           title="这个筛选下没有内容"
-          description="换一个类型，或者关闭“只看未读”试试。"
+          description="换一个类型，或者关闭“只看新增”试试。"
           actionLabel="显示全部内容"
           onAction={() => {
             onSetTypeFilter("all");
@@ -1422,6 +1696,7 @@ function SearchResults({
   items,
   data,
   onMarkRead,
+  onOpen,
   onToggleLater,
   onSave,
   laterCollectionId,
@@ -1430,6 +1705,7 @@ function SearchResults({
   items: ContentItem[];
   data: AppData;
   onMarkRead: (id: string) => void;
+  onOpen: (item: ContentItem) => void;
   onToggleLater: (id: string) => void;
   onSave: (id: string) => void;
   laterCollectionId?: string;
@@ -1452,6 +1728,7 @@ function SearchResults({
               source={sourceForItem(data, item)}
               savedForLater={Boolean(laterCollectionId && item.collectionIds.includes(laterCollectionId))}
               onMarkRead={() => onMarkRead(item.id)}
+              onOpen={() => onOpen(item)}
               onToggleLater={() => onToggleLater(item.id)}
               onSave={() => onSave(item.id)}
             />
@@ -1473,6 +1750,7 @@ function ContentCard({
   source,
   savedForLater,
   onMarkRead,
+  onOpen,
   onToggleLater,
   onSave,
 }: {
@@ -1480,22 +1758,20 @@ function ContentCard({
   source?: Source;
   savedForLater: boolean;
   onMarkRead: () => void;
+  onOpen: () => void;
   onToggleLater: () => void;
   onSave: () => void;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
   const TypeIcon = item.type === "video" ? Play : item.type === "podcast" ? Headphones : FileText;
-  const platform = source?.platform ? platformLabels[source.platform] : "已保存来源";
 
   return (
     <article className={`content-card ${item.read ? "is-read" : ""}`}>
-      <a
+      <button
+        type="button"
         className={`content-visual tone-${item.tone}`}
-        href={item.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={onMarkRead}
-        aria-label={`${item.title}，去${platform}查看`}
+        onClick={onOpen}
+        aria-label={`${item.title}，在本站查看`}
       >
         {item.thumbnailUrl && !imageFailed && (
           <img
@@ -1515,7 +1791,7 @@ function ContentCard({
           {contentTypeLabels[item.type]}
         </span>
         <span className="duration-badge">{item.duration}</span>
-      </a>
+      </button>
 
       <div className="card-body">
         <div className="source-line">
@@ -1523,29 +1799,34 @@ function ContentCard({
           <span>{source?.name ?? "已保存来源"}</span>
           <span className="source-separator">·</span>
           <time dateTime={item.publishedAt}>{item.publishedLabel}</time>
-          {!item.read && <span className="unread-label">未读</span>}
+          {itemIsNew(item) ? (
+            <span className="unread-label">新增</span>
+          ) : !item.read ? (
+            <span className="history-label">订阅前历史</span>
+          ) : null}
         </div>
-        <a
+        <button
+          type="button"
           className="card-title"
-          href={item.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={onMarkRead}
+          onClick={onOpen}
         >
           {item.title}
-        </a>
+        </button>
         <p className="card-summary">{item.summary}</p>
         <div className="card-actions">
-          <a
+          <button
+            type="button"
             className="open-link"
-            href={item.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={onMarkRead}
+            onClick={onOpen}
           >
-            去{platform} <ExternalLink size={14} />
-          </a>
+            站内查看 <PanelTopOpen size={14} />
+          </button>
           <div>
+            {!item.read && (
+              <button type="button" aria-label="标为读过" onClick={onMarkRead}>
+                <Check size={17} />
+              </button>
+            )}
             <button
               className={savedForLater ? "is-active" : ""}
               type="button"
@@ -1574,6 +1855,7 @@ function SubscriptionsView({
   onRefreshSource,
   onToggleSource,
   onRemoveSource,
+  onOpenSource,
 }: {
   sources: Source[];
   totalUnread: number;
@@ -1583,6 +1865,7 @@ function SubscriptionsView({
   onRefreshSource: (id: string) => void;
   onToggleSource: (id: string) => void;
   onRemoveSource: (source: Source) => void;
+  onOpenSource: (source: Source) => void;
 }) {
   const liveCount = sources.filter((source) => source.enabled).length;
   const rssCount = sources.filter((source) => source.feedUrl).length;
@@ -1623,7 +1906,7 @@ function SubscriptionsView({
             </div>
             <div>
               <strong>{totalUnread}</strong>
-              <span>未读内容</span>
+              <span>新增内容</span>
             </div>
           </section>
 
@@ -1639,7 +1922,13 @@ function SubscriptionsView({
                 <div className="source-main">
                   <SourceAvatar source={source} />
                   <div>
-                    <strong>{source.name}</strong>
+                    <button
+                      className="source-name-button"
+                      type="button"
+                      onClick={() => onOpenSource(source)}
+                    >
+                      {source.name}
+                    </button>
                     <p>{source.description}</p>
                     <span className="mobile-source-meta">
                       {platformLabels[source.platform]} · {source.lastSyncLabel}
@@ -1665,14 +1954,17 @@ function SubscriptionsView({
                   {source.unreadCount > 0 && <strong>新增 {source.unreadCount} 条</strong>}
                 </div>
                 <div className="source-actions">
-                  {source.feedUrl ? (
+                  <button
+                    type="button"
+                    aria-label={`在本站查看 ${source.name}`}
+                    onClick={() => onOpenSource(source)}
+                  >
+                    <PanelTopOpen size={17} />
+                  </button>
+                  {source.feedUrl && (
                     <button type="button" aria-label={`更新 ${source.name}`} onClick={() => onRefreshSource(source.id)}>
                       <RefreshCw size={17} />
                     </button>
-                  ) : (
-                    <a href={source.url} target="_blank" rel="noopener noreferrer" aria-label={`前往 ${source.name}`}>
-                      <ExternalLink size={17} />
-                    </a>
                   )}
                   <button
                     type="button"
@@ -1690,7 +1982,7 @@ function SubscriptionsView({
           </section>
 
           <p className="list-footnote">
-            <LockKeyhole size={14} /> RSS 由本地站点按需读取；B站来源使用链接模式，不依赖非公开接口。
+            <LockKeyhole size={14} /> RSS 由本地站点按需读取；B站来源在主显示区以链接模式打开。
           </p>
         </>
       ) : (
@@ -2166,7 +2458,7 @@ function AddSubscriptionModal({
               <span className="source-support-icon bilibili-mark">B</span>
               <div>
                 <strong>B站主页</strong>
-                <p>以链接模式保存，随时前往查看更新</p>
+                <p>以链接模式保存，在本站主区域打开</p>
               </div>
             </div>
             <div>
@@ -2223,8 +2515,8 @@ function AddSubscriptionModal({
                   />
                   <span><Check size={13} /></span>
                   <div>
-                    <strong>将最近 3 条内容带回今日</strong>
-                    <p>避免第一次订阅时一下涌入太多旧内容</p>
+                    <strong>保留最近 3 条作为频道历史</strong>
+                    <p>可以查看，但不会因为刚订阅就标为新增</p>
                   </div>
                 </label>
                 {preview.items.length > 0 && (
@@ -2400,9 +2692,9 @@ function CollectionDetailModal({
                 <span className="drawer-item-meta">
                   {contentTypeLabels[item.type]} · {sourceForItem(data, item)?.name ?? "已保存来源"}
                 </span>
-                <a href={item.url} target="_blank" rel="noopener noreferrer" onClick={() => onOpenItem(item)}>
+                <button type="button" onClick={() => onOpenItem(item)}>
                   {item.title}
-                </a>
+                </button>
                 <p>{item.summary}</p>
               </div>
               {collection.owned && (
@@ -2520,7 +2812,20 @@ function SettingsModal({
           <div>
             <span className="section-label">本地优先</span>
             <h3>你的选择不会成为平台画像</h3>
-            <p>订阅、已读状态、合集和发现偏好都保存在浏览器中。自选不要求登录，也不会把这些数据上传。</p>
+            <p>订阅、查看记录、新增基线、合集和发现偏好都保存在浏览器中。自选不要求登录，也不会把这些数据上传。</p>
+          </div>
+        </section>
+
+        <section className="session-card">
+          <div className="session-card-icon"><PanelTopOpen size={20} /></div>
+          <div>
+            <div className="settings-title-row">
+              <h3>平台登录会话</h3>
+              <span>{data.platformSessions.length} 个站点已在本站打开</span>
+            </div>
+            <p>
+              在内嵌页面登录后，浏览器会按各平台规则继续使用其会话。自选只记录平台地址和最近打开时间，不读取、保存或导出密码与 Cookie。
+            </p>
           </div>
         </section>
 
@@ -2582,6 +2887,7 @@ function FocusModal({
   remaining,
   onClose,
   onMarkRead,
+  onOpenItem,
   onDiscover,
 }: {
   item?: ContentItem;
@@ -2589,6 +2895,7 @@ function FocusModal({
   remaining: number;
   onClose: () => void;
   onMarkRead: (id: string, read: boolean) => void;
+  onOpenItem: (item: ContentItem) => void;
   onDiscover: () => void;
 }) {
   return (
@@ -2612,9 +2919,9 @@ function FocusModal({
             <h2>{item.title}</h2>
             <p>{item.summary}</p>
             <div className="focus-actions">
-              <a className="primary-button" href={item.url} target="_blank" rel="noopener noreferrer" onClick={() => onMarkRead(item.id, true)}>
-                去原站查看 <ExternalLink size={16} />
-              </a>
+              <button className="primary-button" type="button" onClick={() => onOpenItem(item)}>
+                在本站查看 <PanelTopOpen size={16} />
+              </button>
               <button className="secondary-button" type="button" onClick={() => onMarkRead(item.id, true)}>
                 标为读过，下一条 <ArrowRight size={16} />
               </button>

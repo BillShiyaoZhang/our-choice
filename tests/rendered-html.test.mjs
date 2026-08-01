@@ -62,6 +62,26 @@ test("keeps persistence local and removes the disposable starter", async () => {
   await assert.rejects(readFile(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
 });
 
+test("keeps channels and content inside the app with a new-content baseline", async () => {
+  const [app, model, previewRoute] = await Promise.all([
+    readFile(new URL("../app/our-choice-app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/model.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/source-preview/route.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(app, /function EmbeddedViewer/);
+  assert.match(app, /<iframe/);
+  assert.match(app, /返回自选/);
+  assert.match(app, /allow-forms/);
+  assert.match(app, /source\.knownItemIds/);
+  assert.match(app, /isNew:\s*false/);
+  assert.match(app, /历史内容（不计入新增）/);
+  assert.doesNotMatch(app, /target="_blank"/);
+  assert.match(model, /platformSessions:\s*PlatformSession\[\]/);
+  assert.match(model, /viewedAt\?:\s*string/);
+  assert.match(previewRoute, /publishedAtReliable:\s*Boolean\(publishedAt\)/);
+});
+
 test("source preview rejects non-public URLs", async () => {
   const app = await worker();
   const response = await app.fetch(

@@ -98,6 +98,9 @@
                 <li>RSS / Atom / 播客预览与订阅</li>
                 <li>网站公开 Feed 自动发现</li>
                 <li>Bilibili 创作者链接模式</li>
+                <li>频道与具体内容在站内主区域加载</li>
+                <li>订阅基线、查看记录与准确的新增判定</li>
+                <li>复用浏览器管理的平台登录会话</li>
                 <li>筛选、搜索、稍后看与安静阅读</li>
                 <li>本地合集与人工精选发现</li>
                 <li>JSON 导入导出、跨标签页同步</li>
@@ -110,6 +113,7 @@
                 <li>没有账号和跨设备云同步</li>
                 <li>不会绕过付费墙或来源访问限制</li>
                 <li>Bilibili 链接模式不自动拉取更新</li>
+                <li>来源可通过安全响应头禁止被第三方页面内嵌</li>
                 <li>发现偏好仅在当前浏览器生效</li>
                 <li>清除站点数据前需要先导出备份</li>
               </ul>
@@ -147,7 +151,7 @@ npm run dev</code></pre>
           </div>
           <div class="steps">
             <article><span>1</span><div><h3>添加你信任的来源</h3><p>粘贴 RSS、Atom、网站地址或 Bilibili 创作者主页，确认预览后再订阅。</p></div></article>
-            <article><span>2</span><div><h3>在“今日”集中处理</h3><p>按文章、视频、播客或未读筛选；不想立刻读的内容加入“稍后”。</p></div></article>
+            <article><span>2</span><div><h3>在“今日”集中处理</h3><p>按文章、视频、播客或新增筛选；点击后在主显示区打开，并用固定返回按钮回到自选。</p></div></article>
             <article><span>3</span><div><h3>把值得保留的内容放进合集</h3><p>创建自己的主题合集，或从发现页明确订阅一个人工精选合集。</p></div></article>
             <article><span>4</span><div><h3>定期导出本地数据</h3><p>在设置中下载 JSON 备份，换浏览器或清理数据前可随时恢复。</p></div></article>
           </div>
@@ -162,13 +166,13 @@ npm run dev</code></pre>
                 <li>点击右上角“添加订阅”。</li>
                 <li>粘贴公开的 HTTP(S) 地址。</li>
                 <li>检查来源名称、模式和最近内容预览。</li>
-                <li>选择是否带入最近内容，然后确认。</li>
+                <li>选择是否保留最近 3 条作为频道历史，然后确认。</li>
               </ol>
             </div>
             <div>
               <h3>管理来源</h3>
-              <p>在“订阅”中可单独刷新、暂停或移除来源。批量刷新最多同时处理三路，失败不会清空旧内容。</p>
-              <p>Bilibili 目前以链接模式保存，不自动抓取动态；如有公开 RSS 转换地址，可按普通 RSS 添加。</p>
+              <p>在“订阅”中可打开频道、单独刷新、暂停或移除来源。批量刷新最多同时处理三路，失败不会清空旧内容。</p>
+              <p>Bilibili 目前以站内链接模式保存，不自动抓取动态；如有公开 RSS 转换地址，可按普通 RSS 添加。</p>
             </div>
           </div>
           <div class="callout warning"><span aria-hidden="true">!</span><div><strong>无法识别网页？</strong><p>优先粘贴网站公开的 RSS/Atom 地址。普通网页只有声明了公开 Feed 时才能自动发现。</p></div></div>
@@ -177,7 +181,8 @@ npm run dev</code></pre>
         <section class="doc-section section-block" id="reading" data-doc-section data-keywords="今日 阅读 稍后 合集 发现 搜索 安静 专注 筛选">
           <div class="section-heading compact"><span class="section-number">05</span><div><h2>阅读与整理</h2></div></div>
           <div class="feature-list">
-            <article><span>今日</span><div><h3>有限的内容收件箱</h3><p>组合内容类型与未读筛选，阅读后自动更新状态。全局搜索会检查标题、摘要与来源。</p></div></article>
+            <article><span>今日</span><div><h3>有限的内容收件箱</h3><p>组合内容类型与新增筛选。点击内容会记录查看时间并在站内打开；全局搜索会检查标题、摘要与来源。</p></div></article>
+            <article><span>新增</span><div><h3>从订阅时刻建立基线</h3><p>刚加入来源时看到的条目属于频道历史，不会全部变成新增；后续首次发现且尚未查看的内容才计入新增。</p></div></article>
             <article><span>稍后</span><div><h3>延后决定，不让页面变乱</h3><p>把当前不处理的条目加入稍后，再从合集区域集中回看。</p></div></article>
             <article><span>合集</span><div><h3>建立长期主题</h3><p>创建本地合集并收录内容，也可以明确订阅发现页展示的精选合集。</p></div></article>
             <article><span>发现</span><div><h3>探索，但不污染订阅</h3><p>“附近一步”“跨出一步”“随机看看”提供不同探索距离，并展示推荐原因。</p></div></article>
@@ -186,7 +191,7 @@ npm run dev</code></pre>
 
         <section class="doc-section section-block" id="privacy" data-doc-section data-keywords="隐私 数据 localStorage JSON 导出 导入 备份 离线 跨标签">
           <div class="section-heading compact"><span class="section-number">06</span><div><h2>数据与隐私</h2></div></div>
-          <p class="lead">订阅、已读状态、合集和发现偏好保存在当前浏览器的 <code>localStorage</code>，键名为 <code>our-choice:state:v1</code>。</p>
+          <p class="lead">订阅、查看时间、新增基线、合集和发现偏好保存在当前浏览器的 <code>localStorage</code>，键名为 <code>our-choice:state:v1</code>；旧版数据会自动迁移到当前数据模型。</p>
           <div class="privacy-flow" role="img" aria-label="来源经预览接口获取公开内容，选择和阅读状态保存在当前浏览器，只有用户主动导出时才生成 JSON 文件">
             <div><small>公开来源</small><strong>RSS / 网站</strong></div><span>→</span>
             <div><small>按需预览</small><strong>本地服务路由</strong></div><span>→</span>
@@ -197,6 +202,7 @@ npm run dev</code></pre>
             <li><strong>备份：</strong>设置 → 数据与隐私 → 导出，下载 JSON 文件。</li>
             <li><strong>恢复：</strong>在同一区域导入此前导出的 JSON；导入前请确认文件来源。</li>
             <li><strong>跨标签页：</strong>同一站点下的其他标签页会收到存储变化。</li>
+            <li><strong>平台会话：</strong>内嵌页面可沿用浏览器按平台规则保存的登录 Cookie；自选只记录平台地址和最近打开时间，不接触密码或 Cookie 内容。</li>
             <li><strong>清理提醒：</strong>清除浏览器站点数据会删除本地内容，操作前请先导出。</li>
           </ul>
         </section>
@@ -205,6 +211,8 @@ npm run dev</code></pre>
           <div class="section-heading compact"><span class="section-number">07</span><div><h2>常见问题</h2></div></div>
           <details><summary>订阅刷新失败会丢掉之前的内容吗？</summary><p>不会。来源请求或解析失败时会保留已有内容，并给出可重试提示。</p></details>
           <details><summary>为什么 Bilibili 没有内容预览？</summary><p>当前版本避免依赖不稳定的匿名接口，因此只保存创作者或视频链接。公开的 RSS 转换地址仍可正常预览。</p></details>
+          <details><summary>为什么有些页面无法在主显示区打开？</summary><p>部分平台通过 X-Frame-Options 或 CSP 禁止任何第三方站点内嵌。此时可在当前页打开来源，使用浏览器返回后，查看记录仍会保留。</p></details>
+          <details><summary>自选会保存我的平台密码吗？</summary><p>不会。登录表单、Cookie 与会话都由来源平台和浏览器处理；自选只保存非敏感的平台地址与最近打开时间。</p></details>
           <details><summary>换一台设备后为什么没有数据？</summary><p>当前没有账号或云同步。请在原设备导出 JSON，再在新设备导入。</p></details>
           <details><summary>为什么本地网络地址不能订阅？</summary><p>来源预览接口会拒绝 localhost、私网 IP、非标准端口和危险重定向，防止服务端请求伪造（SSRF）。</p></details>
         </section>
@@ -259,7 +267,7 @@ npm run dev</code></pre>
             <div class="arch-connector"><span>公开 HTTP(S)</span><b>→</b></div>
             <div class="arch-node"><small>UPSTREAM</small><strong>RSS / Atom</strong><span>最多 1 MB</span></div>
           </div>
-          <p>客户端拥有产品状态；服务端路由只在预览和刷新时请求来源，不持久化用户订阅。响应设置 <code>Cache-Control: no-store</code>。</p>
+          <p>客户端拥有产品状态与来源基线；服务端路由只在预览和刷新时请求来源，不持久化用户订阅。外部频道和内容通过受限 iframe 在主区域加载，来源平台的会话仍由浏览器管理。响应设置 <code>Cache-Control: no-store</code>。</p>
         </section>
 
         <section class="doc-section section-block" id="preview-api" data-doc-section data-keywords="API source preview POST 请求 响应 错误 RSS Bilibili 安全">
