@@ -24,7 +24,10 @@ async function backgroundHarness(initialStorage = {}) {
   const storage = plain(initialStorage);
   const createdTabs = [];
   const updatedTabs = [];
+  const injectedScripts = [];
+  const tabMessages = [];
   let runtimeListener = null;
+  let tabUpdatedListener = null;
   const chrome = {
     storage: {
       local: {
@@ -44,6 +47,20 @@ async function backgroundHarness(initialStorage = {}) {
       async update(tabId, options) {
         updatedTabs.push({ tabId, options: plain(options) });
         return { id: tabId, windowId: 7, ...options };
+      },
+      async sendMessage(tabId, message) {
+        tabMessages.push({ tabId, message: plain(message) });
+        return { ok: true };
+      },
+      onUpdated: {
+        addListener(listener) {
+          tabUpdatedListener = listener;
+        },
+      },
+    },
+    scripting: {
+      async executeScript(options) {
+        injectedScripts.push(plain(options));
       },
     },
     windows: { async update() {} },
@@ -66,7 +83,71 @@ async function backgroundHarness(initialStorage = {}) {
   const source = `${await text("browser-extension/background.js")}\nglobalThis.__testHandleMessage = handleMessage;`;
   new Script(source).runInNewContext(context);
   assert.equal(typeof runtimeListener, "function");
-  return { handleMessage: context.__testHandleMessage, storage, createdTabs, updatedTabs };
+  assert.equal(typeof tabUpdatedListener, "function");
+  return {
+    handleMessage: context.__testHandleMessage,
+    storage,
+    createdTabs,
+    updatedTabs,
+    injectedScripts,
+    tabMessages,
+    tabUpdatedListener,
+  };
+}
+
+async function contentHarness() {
+  let runtimeListener = null;
+  const image = {
+    currentSrc: "https://i0.hdslb.com/bfs/face/avatar.jpg@96w_96h.webp",
+    src: "https://i0.hdslb.com/bfs/face/avatar.jpg@96w_96h.webp",
+    getAttribute(name) {
+      return name === "alt" ? "影视飓风" : null;
+    },
+  };
+  const anchor = {
+    href: "https://space.bilibili.com/946974",
+    textContent: "影视飓风",
+    parentElement: null,
+    getAttribute(name) {
+      return name === "title" ? "影视飓风" : null;
+    },
+  };
+  const card = {
+    parentElement: null,
+    querySelectorAll(selector) {
+      return selector.includes("space.bilibili.com") ? [anchor] : selector === "img" ? [image] : [];
+    },
+  };
+  anchor.parentElement = card;
+  const document = {
+    querySelectorAll(selector) {
+      return selector.includes("space.bilibili.com") ? [anchor] : [];
+    },
+  };
+  const context = {
+    URL,
+    document,
+    location: {
+      href: "https://space.bilibili.com/123/relation/follow",
+      hostname: "space.bilibili.com",
+      pathname: "/123/relation/follow",
+    },
+    window: {},
+    chrome: {
+      runtime: {
+        onMessage: {
+          addListener(listener) {
+            runtimeListener = listener;
+          },
+        },
+      },
+    },
+    OurChoiceExtension: await extensionHelpers(),
+  };
+  context.globalThis = context;
+  new Script(await text("browser-extension/content-script.js")).runInNewContext(context);
+  assert.equal(typeof runtimeListener, "function");
+  return runtimeListener;
 }
 
 test("browser assistant manifest keeps permissions narrow and bridges only local app origins", async () => {
@@ -114,14 +195,24 @@ test("browser assistant normalizes public URLs and Bilibili creator identities",
 
   assert.deepEqual(
     plain(helpers.dedupeBilibiliCandidates([
-      { externalId: "946974", name: "影视飓风", url: "https://space.bilibili.com/946974/video" },
-      { externalId: "946974", name: "重复", url: "https://space.bilibili.com/946974" },
+      { externalId: "946974", name: "B站 UP 主 946974", url: "https://space.bilibili.com/946974/video" },
+      {
+        externalId: "946974",
+        name: "影视飓风",
+        url: "https://space.bilibili.com/946974",
+        imageUrl: "https://i0.hdslb.com/bfs/face/example.jpg@96w_96h.webp",
+      },
       { externalId: "bad", name: "无效", url: "javascript:alert(1)" },
       { externalId: "2", name: "另一个 UP", url: "https://space.bilibili.com/2/" },
     ])),
     [
       { externalId: "2", name: "另一个 UP", url: "https://space.bilibili.com/2" },
-      { externalId: "946974", name: "影视飓风", url: "https://space.bilibili.com/946974" },
+      {
+        externalId: "946974",
+        name: "影视飓风",
+        url: "https://space.bilibili.com/946974",
+        imageUrl: "https://i0.hdslb.com/bfs/face/example.jpg@96w_96h.webp",
+      },
     ],
   );
 });
@@ -188,6 +279,86 @@ test("browser assistant opens an explicit handoff URL after a paired follow scan
   assert.deepEqual(harness.createdTabs, [{ url: "http://localhost:3000/#browser-assistant" }]);
 });
 
+test("browser assistant records automatic follow pages once and keeps resumable progress", async () => {
+  const harness = await backgroundHarness({
+    ourChoiceConfigV1: {
+      appUrl: "http://localhost:3000",
+      pairingCode: "paired-locally",
+      appTabId: null,
+    },
+  });
+
+  const started = await harness.handleMessage({
+    type: "OUR_CHOICE_BEGIN_AUTO_FOLLOW_SCAN",
+    tabId: 44,
+  });
+  assert.equal(started.ok, true);
+  assert.deepEqual(harness.storage.ourChoiceBilibiliFollowV1.auto, {
+    running: true,
+    tabId: 44,
+    pagesScanned: 0,
+    totalPages: null,
+    seenSignatures: [],
+    error: "",
+  });
+
+  const page = {
+    type: "OUR_CHOICE_RECORD_AUTO_FOLLOW_PAGE",
+    tabId: 44,
+    page: 1,
+    totalPages: 3,
+    signature: "2,946974",
+    candidates: [
+      { externalId: "2", name: "另一个 UP", url: "https://space.bilibili.com/2" },
+      {
+        externalId: "946974",
+        name: "影视飓风",
+        url: "https://space.bilibili.com/946974",
+        imageUrl: "https://i0.hdslb.com/bfs/face/example.jpg",
+      },
+    ],
+  };
+  const recorded = await harness.handleMessage(page);
+  const repeated = await harness.handleMessage(page);
+
+  assert.equal(recorded.ok, true);
+  assert.equal(recorded.duplicatePage, false);
+  assert.equal(recorded.count, 2);
+  assert.equal(repeated.duplicatePage, true);
+  assert.equal(harness.storage.ourChoiceBilibiliFollowV1.auto.pagesScanned, 1);
+  assert.deepEqual(harness.storage.ourChoiceBilibiliFollowV1.auto.seenSignatures, ["2,946974"]);
+  assert.equal(harness.storage.ourChoiceBilibiliFollowV1.current[1].imageUrl, "https://i0.hdslb.com/bfs/face/example.jpg");
+
+  harness.tabUpdatedListener(44, { status: "complete" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.injectedScripts, [{
+    target: { tabId: 44 },
+    files: ["shared.js", "content-script.js"],
+  }]);
+  assert.deepEqual(harness.tabMessages, [{
+    tabId: 44,
+    message: { type: "OUR_CHOICE_AUTO_SCAN_BILIBILI" },
+  }]);
+});
+
+test("browser assistant reads a rendered Bilibili card nickname and avatar", async () => {
+  const listener = await contentHarness();
+  let response = null;
+  listener({ type: "OUR_CHOICE_SCAN_BILIBILI" }, {}, (value) => {
+    response = value;
+  });
+
+  assert.deepEqual(plain(response), {
+    ok: true,
+    candidates: [{
+      externalId: "946974",
+      name: "影视飓风",
+      url: "https://space.bilibili.com/946974",
+      imageUrl: "https://i0.hdslb.com/bfs/face/avatar.jpg@96w_96h.webp",
+    }],
+  });
+});
+
 test("browser assistant sanitizes captures without credentials or unsafe page data", async () => {
   const { sanitizeCapture } = await extensionHelpers();
   const capture = sanitizeCapture({
@@ -214,11 +385,15 @@ test("browser assistant sanitizes captures without credentials or unsafe page da
 });
 
 test("app exposes paired queue import, clip collection routing, and source deduplication", async () => {
-  const [app, model, docs, extensionReadme] = await Promise.all([
+  const [app, model, styles, docs, extensionReadme, popupHtml, popup, content] = await Promise.all([
     text("app/our-choice-app.tsx"),
     text("app/lib/model.ts"),
+    text("app/globals.css"),
     text("docs/index.html"),
     text("browser-extension/README.md"),
+    text("browser-extension/popup.html"),
+    text("browser-extension/popup.js"),
+    text("browser-extension/content-script.js"),
   ]);
 
   assert.match(app, /our-choice:assistant:v1/);
@@ -233,11 +408,22 @@ test("app exposes paired queue import, clip collection routing, and source dedup
   assert.match(app, /取消关注只供确认，不会自动删除/);
   assert.match(app, /Promise\.all/);
   assert.match(app, /Math\.min\(3,/);
+  assert.match(app, /imageUrl:\s*request\.candidate\.imageUrl\s*\?\?\s*preview\.source\.imageUrl/);
+  assert.match(app, /source\?\.imageUrl/);
   assert.match(model, /capturedAt\?: string/);
+  assert.match(model, /imageUrl\?: string/);
   assert.match(model, /selectionText\?: string/);
   assert.match(model, /importedFrom\?: "browser-extension"/);
   assert.match(docs, /自选浏览器助手/);
   assert.match(docs, /扫描本页/);
   assert.match(extensionReadme, /加载已解压的扩展程序/);
   assert.match(extensionReadme, /不会读取.*Cookie/);
+  assert.match(popupHtml, /id="auto-scan"/);
+  assert.match(popup, /OUR_CHOICE_BEGIN_AUTO_FOLLOW_SCAN/);
+  assert.match(content, /OUR_CHOICE_AUTO_SCAN_BILIBILI/);
+  assert.match(content, /MAX_AUTO_SCAN_PAGES\s*=\s*200/);
+  assert.match(content, /AUTO_SCAN_PAGE_TIMEOUT_MS\s*=\s*15_000/);
+  assert.match(content, /currentSrc/);
+  assert.match(styles, /\.source-avatar img/);
+  assert.match(styles, /object-fit:\s*cover/);
 });

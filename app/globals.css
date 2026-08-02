@@ -1210,6 +1210,7 @@ a {
 
 .source-avatar {
   display: inline-grid;
+  overflow: hidden;
   width: 42px;
   height: 42px;
   flex: 0 0 auto;
@@ -1229,6 +1230,13 @@ a {
   border-width: 1px;
   border-radius: 7px;
   font-size: 9px;
+}
+
+.source-avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
 }
 
 .card-title {

@@ -42,6 +42,8 @@ export interface Source {
   id: string;
   name: string;
   description: string;
+  /** Public source/avatar image URL; UI falls back to initials when unavailable. */
+  imageUrl?: string;
   platform: Platform;
   url: string;
   feedUrl?: string;

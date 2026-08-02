@@ -35,12 +35,22 @@
       if (!url) continue;
       const externalId = url.slice(url.lastIndexOf("/") + 1);
       if (value && String(value.externalId || externalId) !== externalId) continue;
-      if (byId.has(externalId)) continue;
-      byId.set(externalId, {
+      const fallbackName = `B站 UP 主 ${externalId}`;
+      const name = cleanText(value && value.name, 120) || fallbackName;
+      const imageUrl = normalizeHttpUrl(value && value.imageUrl);
+      const existing = byId.get(externalId);
+      if (existing) {
+        if (existing.name === fallbackName && name !== fallbackName) existing.name = name;
+        if (!existing.imageUrl && imageUrl) existing.imageUrl = imageUrl;
+        continue;
+      }
+      const candidate = {
         externalId,
-        name: cleanText(value && value.name, 120) || `B站 UP 主 ${externalId}`,
+        name,
         url,
-      });
+      };
+      if (imageUrl) candidate.imageUrl = imageUrl;
+      byId.set(externalId, candidate);
     }
     return [...byId.values()].sort((left, right) =>
       left.externalId.localeCompare(right.externalId, "en", { numeric: true }),

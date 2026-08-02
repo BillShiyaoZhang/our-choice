@@ -164,6 +164,7 @@ interface AssistantSourceCandidate {
   url: string;
   name: string;
   externalId?: string;
+  imageUrl?: string;
 }
 
 type AssistantQueueItem =
@@ -350,10 +351,12 @@ function normalizeAssistantCandidate(value: unknown): AssistantSourceCandidate |
   const candidate = value as Record<string, unknown>;
   const url = normalizedPublicUrl(candidate.url);
   if (!url) return null;
+  const imageUrl = normalizedPublicUrl(candidate.imageUrl);
   return {
     url,
     name: assistantText(candidate.name, 120) || new URL(url).hostname,
     externalId: assistantText(candidate.externalId, 80) || undefined,
+    imageUrl: imageUrl || undefined,
   };
 }
 
@@ -447,6 +450,7 @@ function normalizeAppData(value: unknown): AppData | null {
   }));
   const sources = (candidate.sources as Source[]).map<Source>((source) => ({
     ...source,
+    imageUrl: normalizedPublicUrl(source.imageUrl) || undefined,
     bilibiliOpenMode:
       source.platform === "bilibili"
         ? source.bilibiliOpenMode === "external"
@@ -1512,6 +1516,7 @@ export function OurChoiceApp() {
               description:
                 preview.source.description ||
                 (preview.mode === "live" ? "通过浏览器助手导入的可同步来源" : "通过浏览器助手导入的平台链接"),
+              imageUrl: request.candidate.imageUrl ?? preview.source.imageUrl,
               platform: preview.source.kind,
               url:
                 preview.source.siteUrl ||
@@ -2016,6 +2021,7 @@ export function OurChoiceApp() {
               description:
                 preview.source.description ||
                 (preview.mode === "live" ? "通过 RSS 获取的新内容" : "平台链接订阅"),
+              imageUrl: preview.source.imageUrl,
               platform: preview.source.kind,
               url:
                 preview.source.siteUrl ||
@@ -4725,9 +4731,18 @@ function ConfirmModal({ state, onClose }: { state: ConfirmState; onClose: () => 
 }
 
 function SourceAvatar({ source, size = "regular" }: { source?: Source; size?: "small" | "regular" }) {
+  const [failedImageUrl, setFailedImageUrl] = useState("");
+
   return (
     <span className={`source-avatar tone-${source?.tone ?? "ink"} avatar-${size}`} aria-hidden="true">
-      {source?.initials ?? "源"}
+      {source?.imageUrl && source.imageUrl !== failedImageUrl ? (
+        <img
+          src={source.imageUrl}
+          alt=""
+          referrerPolicy="no-referrer"
+          onError={() => setFailedImageUrl(source.imageUrl ?? "")}
+        />
+      ) : source?.initials ?? "源"}
     </span>
   );
 }

@@ -7,6 +7,11 @@ const CONFIG_KEY = "ourChoiceConfigV1";
 const FOLLOW_KEY = "ourChoiceBilibiliFollowV1";
 const DEFAULT_CONFIG = { appUrl: "http://localhost:3000", pairingCode: "", appTabId: null };
 const APP_HANDOFF_HASH = "#browser-assistant";
+const MAX_AUTO_SCAN_PAGES = 200;
+
+function emptyFollowState() {
+  return { active: false, current: [], previous: [], auto: null };
+}
 
 async function stored(key, fallback) {
   const result = await chrome.storage.local.get(key);
@@ -82,7 +87,15 @@ async function requirePairing() {
     : { ok: false, error: "请先在连接设置中填写并保存配对码。" };
 }
 
-async function handleMessage(message) {
+function senderTabId(message, sender) {
+  return Number.isInteger(message?.tabId)
+    ? message.tabId
+    : Number.isInteger(sender?.tab?.id)
+      ? sender.tab.id
+      : null;
+}
+
+async function handleMessage(message, sender) {
   switch (message?.type) {
     case "OUR_CHOICE_GET_CONFIG":
       return { ok: true, config: await config() };
@@ -107,6 +120,8 @@ async function handleMessage(message) {
               candidate: {
                 url: OurChoiceExtension.normalizeHttpUrl(message.item.candidate?.url),
                 name: OurChoiceExtension.cleanText(message.item.candidate?.name, 120),
+                externalId: OurChoiceExtension.cleanText(message.item.candidate?.externalId, 80) || undefined,
+                imageUrl: OurChoiceExtension.normalizeHttpUrl(message.item.candidate?.imageUrl) || undefined,
               },
             }
           : null;
@@ -122,14 +137,37 @@ async function handleMessage(message) {
         active: true,
         current: [],
         previous: (await stored(FOLLOW_KEY, {})).previous ?? [],
+        auto: null,
       });
       return { ok: true, count: 0 };
+    case "OUR_CHOICE_BEGIN_AUTO_FOLLOW_SCAN": {
+      const pairingError = await requirePairing();
+      if (pairingError) return pairingError;
+      if (!Number.isInteger(message.tabId)) return { ok: false, error: "没有找到要扫描的关注页。" };
+      const previous = (await stored(FOLLOW_KEY, emptyFollowState())).previous ?? [];
+      const auto = {
+        running: true,
+        tabId: message.tabId,
+        pagesScanned: 0,
+        totalPages: null,
+        seenSignatures: [],
+        error: "",
+      };
+      await save(FOLLOW_KEY, { active: true, current: [], previous, auto });
+      return { ok: true, count: 0, auto };
+    }
     case "OUR_CHOICE_GET_FOLLOW_SCAN": {
-      const state = await stored(FOLLOW_KEY, { active: false, current: [], previous: [] });
-      return { ok: true, active: Boolean(state.active), count: state.current?.length ?? 0, previousCount: state.previous?.length ?? 0 };
+      const state = await stored(FOLLOW_KEY, emptyFollowState());
+      return {
+        ok: true,
+        active: Boolean(state.active),
+        count: state.current?.length ?? 0,
+        previousCount: state.previous?.length ?? 0,
+        auto: state.auto ?? null,
+      };
     }
     case "OUR_CHOICE_MERGE_FOLLOW_SCAN": {
-      const state = await stored(FOLLOW_KEY, { active: false, current: [], previous: [] });
+      const state = await stored(FOLLOW_KEY, emptyFollowState());
       if (!state.active) return { ok: false, error: "请先开始一轮关注扫描。" };
       const before = OurChoiceExtension.dedupeBilibiliCandidates(state.current);
       const merged = OurChoiceExtension.dedupeBilibiliCandidates([
@@ -139,10 +177,73 @@ async function handleMessage(message) {
       await save(FOLLOW_KEY, { ...state, current: merged });
       return { ok: true, count: merged.length, addedOnPage: merged.length - before.length };
     }
+    case "OUR_CHOICE_RECORD_AUTO_FOLLOW_PAGE": {
+      const state = await stored(FOLLOW_KEY, emptyFollowState());
+      const auto = state.auto;
+      const tabId = senderTabId(message, sender);
+      if (!state.active || !auto?.running || auto.tabId !== tabId) {
+        return { ok: false, error: "自动扫描已经停止。" };
+      }
+      const signature = OurChoiceExtension.cleanText(message.signature, 4_000);
+      if (!signature) return { ok: false, error: "当前页没有可识别的关注账号。" };
+      const seenSignatures = Array.isArray(auto.seenSignatures) ? auto.seenSignatures : [];
+      if (seenSignatures.includes(signature)) {
+        return { ok: true, duplicatePage: true, count: state.current?.length ?? 0, auto };
+      }
+      if (seenSignatures.length >= MAX_AUTO_SCAN_PAGES) {
+        const stopped = { ...auto, running: false, error: "已达到 200 页安全上限。" };
+        await save(FOLLOW_KEY, { ...state, auto: stopped });
+        return { ok: false, error: stopped.error };
+      }
+      const before = OurChoiceExtension.dedupeBilibiliCandidates(state.current);
+      const merged = OurChoiceExtension.dedupeBilibiliCandidates([
+        ...before,
+        ...(Array.isArray(message.candidates) ? message.candidates : []),
+      ]);
+      const totalPages = Number.isInteger(message.totalPages)
+        ? Math.min(MAX_AUTO_SCAN_PAGES, Math.max(1, message.totalPages))
+        : auto.totalPages;
+      const nextAuto = {
+        ...auto,
+        pagesScanned: seenSignatures.length + 1,
+        totalPages,
+        seenSignatures: [...seenSignatures, signature],
+        error: "",
+      };
+      await save(FOLLOW_KEY, { ...state, current: merged, auto: nextAuto });
+      return {
+        ok: true,
+        duplicatePage: false,
+        count: merged.length,
+        addedOnPage: merged.length - before.length,
+        auto: nextAuto,
+      };
+    }
+    case "OUR_CHOICE_REPORT_AUTO_FOLLOW_SCAN": {
+      const state = await stored(FOLLOW_KEY, emptyFollowState());
+      const tabId = senderTabId(message, sender);
+      if (!state.auto || state.auto.tabId !== tabId) {
+        return { ok: false, error: "没有对应的自动扫描。" };
+      }
+      const nextAuto = {
+        ...state.auto,
+        running: message.running !== false,
+        error: OurChoiceExtension.cleanText(message.error, 300),
+      };
+      await save(FOLLOW_KEY, { ...state, auto: nextAuto });
+      return { ok: true, auto: nextAuto, count: state.current?.length ?? 0 };
+    }
+    case "OUR_CHOICE_CANCEL_AUTO_FOLLOW_SCAN": {
+      const state = await stored(FOLLOW_KEY, emptyFollowState());
+      if (!state.auto) return { ok: true, count: state.current?.length ?? 0 };
+      const nextAuto = { ...state.auto, running: false, error: "已由用户取消，已扫描结果仍保留。" };
+      await save(FOLLOW_KEY, { ...state, auto: nextAuto });
+      return { ok: true, count: state.current?.length ?? 0, auto: nextAuto };
+    }
     case "OUR_CHOICE_FINISH_FOLLOW_SCAN": {
       const pairingError = await requirePairing();
       if (pairingError) return pairingError;
-      const state = await stored(FOLLOW_KEY, { active: false, current: [], previous: [] });
+      const state = await stored(FOLLOW_KEY, emptyFollowState());
       const current = OurChoiceExtension.dedupeBilibiliCandidates(state.current);
       if (!state.active || !current.length) return { ok: false, error: "本轮还没有扫描到任何 UP 主。" };
       const differences = OurChoiceExtension.diffFollowSnapshot(state.previous, current);
@@ -154,7 +255,7 @@ async function handleMessage(message) {
         removed: differences.removed,
         previousCount: state.previous?.length ?? 0,
       });
-      await save(FOLLOW_KEY, { active: false, current: [], previous: current });
+      await save(FOLLOW_KEY, { active: false, current: [], previous: current, auto: null });
       await openApp(true);
       return { ok: true, item: queued, count: current.length, added: differences.added.length, removed: differences.removed.length };
     }
@@ -179,9 +280,31 @@ async function handleMessage(message) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  handleMessage(message).then(sendResponse).catch((error) => {
+async function resumeAutoScan(tabId) {
+  const state = await stored(FOLLOW_KEY, emptyFollowState());
+  if (!state.active || !state.auto?.running || state.auto.tabId !== tabId) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["shared.js", "content-script.js"],
+    });
+    await chrome.tabs.sendMessage(tabId, { type: "OUR_CHOICE_AUTO_SCAN_BILIBILI" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "关注页重新加载后无法继续扫描。";
+    await save(FOLLOW_KEY, {
+      ...state,
+      auto: { ...state.auto, running: false, error: message },
+    });
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  handleMessage(message, sender).then(sendResponse).catch((error) => {
     sendResponse({ ok: false, error: error instanceof Error ? error.message : "操作失败。" });
   });
   return true;
+});
+
+chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "complete") void resumeAutoScan(tabId);
 });

@@ -33,6 +33,7 @@ button.secondary { background: #e8f0eb; border-color: #cbdcd2; }
 .scan span { color: #4a7562; font-size: 11px; }
 .scan > div:last-child { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .scan > div:last-child button { flex: 1 1 90px; }
+.scan > div:last-child button.wide { flex-basis: 100%; }
 .status { min-height: 18px; margin: 8px 2px; color: #4a675b; font-size: 11px; line-height: 1.45; }
 .status.error { color: #a23d32; }
 footer { border-top: 1px solid #dedbd2; padding-top: 10px; display: flex; justify-content: space-between; }

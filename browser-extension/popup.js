@@ -2,13 +2,14 @@
 
 let inspection = null;
 let activeTabId = null;
+let followScanState = null;
 
 const elements = Object.fromEntries(
   [
     "open-settings", "settings", "app-url", "pairing-code", "save-settings",
     "page-site", "page-title", "selection-note", "save-later", "save-collection",
     "subscribe", "bilibili-scan", "scan-count", "begin-scan", "scan-page",
-    "finish-scan", "status", "open-app", "export-queue",
+    "finish-scan", "auto-scan", "status", "open-app", "export-queue",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -67,11 +68,21 @@ async function enqueueSource() {
 
 async function renderScanState() {
   const result = await send({ type: "OUR_CHOICE_GET_FOLLOW_SCAN" });
+  followScanState = result.ok ? result : null;
   const active = Boolean(result.ok && result.active);
-  elements["scan-count"].textContent = active ? `本轮已收集 ${result.count} 个` : `上次 ${result.previousCount || 0} 个`;
-  elements["scan-page"].disabled = !active;
-  elements["finish-scan"].disabled = !active || result.count === 0;
+  const autoRunning = Boolean(result.ok && result.auto?.running);
+  elements["scan-count"].textContent = autoRunning
+    ? `自动扫描 ${result.auto.pagesScanned}${result.auto.totalPages ? ` / ${result.auto.totalPages}` : ""} 页 · ${result.count} 个`
+    : active
+      ? `本轮已收集 ${result.count} 个`
+      : `上次 ${result.previousCount || 0} 个`;
+  elements["scan-page"].disabled = !active || autoRunning;
+  elements["finish-scan"].disabled = !active || result.count === 0 || autoRunning;
+  elements["begin-scan"].disabled = autoRunning;
   elements["begin-scan"].textContent = active ? "重新开始" : "开始新一轮";
+  elements["auto-scan"].disabled = !inspection?.isBilibiliFollowPage;
+  elements["auto-scan"].textContent = autoRunning ? "取消自动扫描" : "自动扫描全部关注";
+  if (result.auto?.error) status(result.auto.error, true);
 }
 
 async function scanCurrentPage() {
@@ -105,6 +116,33 @@ elements["begin-scan"].addEventListener("click", async () => {
   await renderScanState();
 });
 elements["scan-page"].addEventListener("click", () => void scanCurrentPage());
+elements["auto-scan"].addEventListener("click", async () => {
+  if (!activeTabId || !inspection?.isBilibiliFollowPage) {
+    return status("请先打开 B站个人空间里的“全部关注”页面。", true);
+  }
+  if (followScanState?.auto?.running) {
+    await send({ type: "OUR_CHOICE_CANCEL_AUTO_FOLLOW_SCAN" });
+    try {
+      await chrome.tabs.sendMessage(activeTabId, { type: "OUR_CHOICE_CANCEL_AUTO_SCAN_BILIBILI" });
+    } catch {
+      // The page may be between two same-origin navigations.
+    }
+    status("正在取消；已经扫描的账号仍会保留。");
+    return renderScanState();
+  }
+  const started = await send({ type: "OUR_CHOICE_BEGIN_AUTO_FOLLOW_SCAN", tabId: activeTabId });
+  if (!started.ok) return status(started.error, true);
+  status("自动扫描已开始；可以关闭弹窗并在页面查看进度。");
+  await renderScanState();
+  chrome.tabs.sendMessage(activeTabId, { type: "OUR_CHOICE_AUTO_SCAN_BILIBILI" }).catch(async (error) => {
+    await send({
+      type: "OUR_CHOICE_REPORT_AUTO_FOLLOW_SCAN",
+      tabId: activeTabId,
+      running: false,
+      error: error instanceof Error ? error.message : "无法启动自动扫描。",
+    });
+  });
+});
 elements["finish-scan"].addEventListener("click", async () => {
   const result = await send({ type: "OUR_CHOICE_FINISH_FOLLOW_SCAN" });
   status(

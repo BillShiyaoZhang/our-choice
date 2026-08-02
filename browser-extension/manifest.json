@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "自选助手",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "把当前网页收藏、订阅或批量导入到本地优先的自选。",
   "permissions": ["activeTab", "scripting", "storage"],
   "background": {
