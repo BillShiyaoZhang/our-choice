@@ -55,12 +55,14 @@ Bilibili 页面额外提供批量关注扫描：
 ## 文件与兼容性
 
 - 扩展源码位于 `browser-extension/`，不需要构建即可通过 Chromium 的“加载已解压的扩展程序”安装。
+- Service Worker 与临时页面注入共享的辅助脚本必须使用标准 `.js` 扩展名；不得通过 `importScripts()` 加载 `.cjs`，因为 Chromium 会把扩展内 `.cjs` 作为 `application/octet-stream` 并拒绝注册 Service Worker。
 - 首版目标为 Chrome/Edge Manifest V3；页面解析和数据契约保持浏览器 API 之外的纯函数，供 Node 测试验证。
 - 应用仍可在没有扩展时独立运行，现有备份格式和 `our-choice:state:v1` 数据保持向后兼容。
 
 ## 验收标准
 
 - Manifest 仅声明 `activeTab`、`scripting`、`storage`，通信桥只匹配两个本地应用来源。
+- 扩展目录不包含被 Service Worker 引用的 `.cjs` 文件；`background.js` 和页面注入统一加载 `shared.js`，保证“加载已解压的扩展程序”可完成注册。
 - 页面解析可以提取规范 URL、RSS/Atom、选中文字和 Bilibili MID，并过滤非 HTTP(S) 与重复候选。
 - 关注扫描可以合并多次本页结果并计算新增/不再出现差异；空扫描不能覆盖上一次完成快照。
 - 应用可以接收、校验、预览和确认收藏、单来源订阅及 Bilibili 批量来源；重复项不重复创建。

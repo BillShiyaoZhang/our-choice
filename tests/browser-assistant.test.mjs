@@ -1,14 +1,22 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Script } from "node:vm";
 
 const root = new URL("../", import.meta.url);
-const require = createRequire(import.meta.url);
-
 async function text(path) {
   return readFile(new URL(path, root), "utf8");
+}
+
+async function extensionHelpers() {
+  const context = { URL };
+  context.globalThis = context;
+  new Script(await text("browser-extension/shared.js")).runInNewContext(context);
+  return context.OurChoiceExtension;
+}
+
+function plain(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
 test("browser assistant manifest keeps permissions narrow and bridges only local app origins", async () => {
@@ -28,14 +36,20 @@ test("browser assistant manifest keeps permissions narrow and bridges only local
   ]);
   assert.equal(manifest.background.service_worker, "background.js");
 
-  for (const path of ["background.js", "content-script.js", "app-bridge.js", "popup.js"]) {
+  const background = await text("browser-extension/background.js");
+  const popup = await text("browser-extension/popup.js");
+  assert.match(background, /importScripts\("shared\.js"\)/);
+  assert.match(popup, /files:\s*\["shared\.js", "content-script\.js"\]/);
+  await assert.rejects(text("browser-extension/shared.cjs"));
+
+  for (const path of ["shared.js", "background.js", "content-script.js", "app-bridge.js", "popup.js"]) {
     const source = await text(`browser-extension/${path}`);
     assert.doesNotThrow(() => new Script(source), `${path} should parse`);
   }
 });
 
-test("browser assistant normalizes public URLs and Bilibili creator identities", () => {
-  const helpers = require("../browser-extension/shared.cjs");
+test("browser assistant normalizes public URLs and Bilibili creator identities", async () => {
+  const helpers = await extensionHelpers();
 
   assert.equal(
     helpers.normalizeHttpUrl(" https://example.com/read?id=1#comments "),
@@ -49,12 +63,12 @@ test("browser assistant normalizes public URLs and Bilibili creator identities",
   assert.equal(helpers.canonicalBilibiliProfile("https://www.bilibili.com/video/BV1x"), null);
 
   assert.deepEqual(
-    helpers.dedupeBilibiliCandidates([
+    plain(helpers.dedupeBilibiliCandidates([
       { externalId: "946974", name: "影视飓风", url: "https://space.bilibili.com/946974/video" },
       { externalId: "946974", name: "重复", url: "https://space.bilibili.com/946974" },
       { externalId: "bad", name: "无效", url: "javascript:alert(1)" },
       { externalId: "2", name: "另一个 UP", url: "https://space.bilibili.com/2/" },
-    ]),
+    ])),
     [
       { externalId: "2", name: "另一个 UP", url: "https://space.bilibili.com/2" },
       { externalId: "946974", name: "影视飓风", url: "https://space.bilibili.com/946974" },
@@ -62,8 +76,8 @@ test("browser assistant normalizes public URLs and Bilibili creator identities",
   );
 });
 
-test("browser assistant follow snapshots report additive and non-destructive differences", () => {
-  const { diffFollowSnapshot } = require("../browser-extension/shared.cjs");
+test("browser assistant follow snapshots report additive and non-destructive differences", async () => {
+  const { diffFollowSnapshot } = await extensionHelpers();
   const previous = [
     { externalId: "1", name: "旧关注", url: "https://space.bilibili.com/1" },
     { externalId: "2", name: "保留", url: "https://space.bilibili.com/2" },
@@ -73,15 +87,15 @@ test("browser assistant follow snapshots report additive and non-destructive dif
     { externalId: "3", name: "新关注", url: "https://space.bilibili.com/3" },
   ];
 
-  assert.deepEqual(diffFollowSnapshot(previous, current), {
+  assert.deepEqual(plain(diffFollowSnapshot(previous, current)), {
     added: [current[1]],
     removed: [previous[0]],
     unchanged: [current[0]],
   });
 });
 
-test("browser assistant sanitizes captures without credentials or unsafe page data", () => {
-  const { sanitizeCapture } = require("../browser-extension/shared.cjs");
+test("browser assistant sanitizes captures without credentials or unsafe page data", async () => {
+  const { sanitizeCapture } = await extensionHelpers();
   const capture = sanitizeCapture({
     url: "https://example.com/post#reply",
     title: "  一篇文章  ",
@@ -94,7 +108,7 @@ test("browser assistant sanitizes captures without credentials or unsafe page da
     contentType: "article",
   });
 
-  assert.deepEqual(capture, {
+  assert.deepEqual(plain(capture), {
     url: "https://example.com/post",
     title: "一篇文章",
     description: "简介",

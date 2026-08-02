@@ -27,7 +27,7 @@ async function inspectCurrentPage() {
   activeTabId = tab.id;
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    files: ["shared.cjs", "content-script.js"],
+    files: ["shared.js", "content-script.js"],
   });
   return chrome.tabs.sendMessage(tab.id, { type: "OUR_CHOICE_INSPECT_PAGE" });
 }

@@ -1,6 +1,6 @@
 "use strict";
 
-importScripts("shared.cjs");
+importScripts("shared.js");
 
 const QUEUE_KEY = "ourChoiceQueueV1";
 const CONFIG_KEY = "ourChoiceConfigV1";
