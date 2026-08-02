@@ -6,6 +6,7 @@ const QUEUE_KEY = "ourChoiceQueueV1";
 const CONFIG_KEY = "ourChoiceConfigV1";
 const FOLLOW_KEY = "ourChoiceBilibiliFollowV1";
 const DEFAULT_CONFIG = { appUrl: "http://localhost:3000", pairingCode: "", appTabId: null };
+const APP_HANDOFF_HASH = "#browser-assistant";
 
 async function stored(key, fallback) {
   const result = await chrome.storage.local.get(key);
@@ -41,18 +42,19 @@ async function config() {
   return validConfig(await stored(CONFIG_KEY, DEFAULT_CONFIG)) ?? DEFAULT_CONFIG;
 }
 
-async function openApp() {
+async function openApp(handoff = false) {
   const current = await config();
+  const targetUrl = handoff ? `${current.appUrl}/${APP_HANDOFF_HASH}` : current.appUrl;
   if (current.appTabId) {
     try {
-      const tab = await chrome.tabs.update(current.appTabId, { active: true, url: current.appUrl });
+      const tab = await chrome.tabs.update(current.appTabId, { active: true, url: targetUrl });
       if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
       return tab;
     } catch {
       // The remembered tab may have been closed.
     }
   }
-  const tab = await chrome.tabs.create({ url: current.appUrl });
+  const tab = await chrome.tabs.create({ url: targetUrl });
   await save(CONFIG_KEY, { ...current, appTabId: tab.id ?? null });
   return tab;
 }
@@ -73,6 +75,13 @@ async function authenticated(message) {
   return Boolean(current.pairingCode && message?.pairingCode === current.pairingCode);
 }
 
+async function requirePairing() {
+  const current = await config();
+  return current.pairingCode
+    ? null
+    : { ok: false, error: "请先在连接设置中填写并保存配对码。" };
+}
+
 async function handleMessage(message) {
   switch (message?.type) {
     case "OUR_CHOICE_GET_CONFIG":
@@ -85,6 +94,8 @@ async function handleMessage(message) {
       return { ok: true, config: next };
     }
     case "OUR_CHOICE_ENQUEUE": {
+      const pairingError = await requirePairing();
+      if (pairingError) return pairingError;
       const capture = message.item?.kind === "clip"
         ? OurChoiceExtension.sanitizeCapture(message.item.page)
         : null;
@@ -103,7 +114,7 @@ async function handleMessage(message) {
         return { ok: false, error: "没有找到可安全发送的页面数据。" };
       }
       const queued = await enqueue(item);
-      await openApp();
+      await openApp(true);
       return { ok: true, item: queued };
     }
     case "OUR_CHOICE_BEGIN_FOLLOW_SCAN":
@@ -129,6 +140,8 @@ async function handleMessage(message) {
       return { ok: true, count: merged.length, addedOnPage: merged.length - before.length };
     }
     case "OUR_CHOICE_FINISH_FOLLOW_SCAN": {
+      const pairingError = await requirePairing();
+      if (pairingError) return pairingError;
       const state = await stored(FOLLOW_KEY, { active: false, current: [], previous: [] });
       const current = OurChoiceExtension.dedupeBilibiliCandidates(state.current);
       if (!state.active || !current.length) return { ok: false, error: "本轮还没有扫描到任何 UP 主。" };
@@ -142,7 +155,7 @@ async function handleMessage(message) {
         previousCount: state.previous?.length ?? 0,
       });
       await save(FOLLOW_KEY, { active: false, current: [], previous: current });
-      await openApp();
+      await openApp(true);
       return { ok: true, item: queued, count: current.length, added: differences.added.length, removed: differences.removed.length };
     }
     case "OUR_CHOICE_PULL_QUEUE": {

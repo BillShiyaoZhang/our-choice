@@ -108,7 +108,9 @@ elements["scan-page"].addEventListener("click", () => void scanCurrentPage());
 elements["finish-scan"].addEventListener("click", async () => {
   const result = await send({ type: "OUR_CHOICE_FINISH_FOLLOW_SCAN" });
   status(
-    result.ok ? `已发送 ${result.count} 个关注；新增 ${result.added}，不再出现 ${result.removed}。` : result.error,
+    result.ok
+      ? `已发送 ${result.count} 个关注；请在自选网页中确认导入。`
+      : result.error,
     !result.ok,
   );
   await renderScanState();

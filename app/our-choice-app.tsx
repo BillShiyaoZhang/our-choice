@@ -68,6 +68,7 @@ import {
 
 const STORAGE_KEY = "our-choice:state:v1";
 const ASSISTANT_STORAGE_KEY = "our-choice:assistant:v1";
+const ASSISTANT_HANDOFF_HASH = "#browser-assistant";
 const CLIP_SOURCE_ID = "source-browser-clips";
 const TONES: VisualTone[] = ["forest", "clay", "ocean", "sun", "plum", "ink"];
 
@@ -571,6 +572,10 @@ export function OurChoiceApp() {
   }, [assistantPairingCode, hydrated]);
 
   useEffect(() => {
+    const handoffRequested = hydrated && window.location.hash === ASSISTANT_HANDOFF_HASH;
+    let handoffSettled = false;
+    const retryTimers: Array<ReturnType<typeof setTimeout>> = [];
+
     function requestQueue() {
       if (!assistantPairingCode) return;
       window.postMessage(
@@ -592,10 +597,12 @@ export function OurChoiceApp() {
         return;
       }
       if (event.data.type !== "OUR_CHOICE_QUEUE_RESPONSE") return;
+      handoffSettled = true;
       if (assistantCheckTimer.current) clearTimeout(assistantCheckTimer.current);
       setAssistantChecking(false);
       const response = event.data.response as { ok?: boolean; items?: unknown; error?: string } | undefined;
       if (!response?.ok) {
+        setSettingsOpen(true);
         if (response?.error) showToast({ message: response.error });
         return;
       }
@@ -606,14 +613,53 @@ export function OurChoiceApp() {
       setAssistantQueue(items);
       setAssistantQueueOrigin("extension");
       if (items.length) setAssistantOpen(true);
+      else if (handoffRequested) showToast({ message: "浏览器助手没有待处理内容，请返回扩展重试。" });
     }
 
     window.addEventListener("message", handleAssistantMessage);
     window.addEventListener("focus", requestQueue);
+    const requestWhenVisible = () => {
+      if (document.visibilityState === "visible") requestQueue();
+    };
+    document.addEventListener("visibilitychange", requestWhenVisible);
+
+    if (handoffRequested) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      if (!assistantPairingCode) {
+        retryTimers.push(setTimeout(() => {
+          setSettingsOpen(true);
+          showToast({ message: "请先生成配对码，并在扩展连接设置中保存同一个配对码。" });
+        }, 0));
+      } else {
+        retryTimers.push(setTimeout(() => {
+          if (handoffSettled) return;
+          setAssistantChecking(true);
+          showToast({ message: "正在连接浏览器助手…" });
+        }, 0));
+        for (const delay of [250, 900]) {
+          retryTimers.push(setTimeout(() => {
+            if (!handoffSettled) requestQueue();
+          }, delay));
+        }
+        if (assistantCheckTimer.current) clearTimeout(assistantCheckTimer.current);
+        assistantCheckTimer.current = setTimeout(() => {
+          if (handoffSettled) return;
+          setAssistantChecking(false);
+          setSettingsOpen(true);
+          showToast({ message: "浏览器助手没有响应，请重新加载扩展并确认配对码相同。" });
+        }, 1_800);
+      }
+    }
     if (hydrated) requestQueue();
     return () => {
       window.removeEventListener("message", handleAssistantMessage);
       window.removeEventListener("focus", requestQueue);
+      document.removeEventListener("visibilitychange", requestWhenVisible);
+      for (const timer of retryTimers) clearTimeout(timer);
+      if (handoffRequested && assistantCheckTimer.current) {
+        clearTimeout(assistantCheckTimer.current);
+        assistantCheckTimer.current = null;
+      }
     };
   }, [assistantPairingCode, hydrated]);
 

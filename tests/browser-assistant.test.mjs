@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Script } from "node:vm";
@@ -17,6 +18,55 @@ async function extensionHelpers() {
 
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+async function backgroundHarness(initialStorage = {}) {
+  const storage = plain(initialStorage);
+  const createdTabs = [];
+  const updatedTabs = [];
+  let runtimeListener = null;
+  const chrome = {
+    storage: {
+      local: {
+        async get(key) {
+          return { [key]: storage[key] };
+        },
+        async set(values) {
+          Object.assign(storage, plain(values));
+        },
+      },
+    },
+    tabs: {
+      async create(options) {
+        createdTabs.push(plain(options));
+        return { id: 91, windowId: 7, ...options };
+      },
+      async update(tabId, options) {
+        updatedTabs.push({ tabId, options: plain(options) });
+        return { id: tabId, windowId: 7, ...options };
+      },
+    },
+    windows: { async update() {} },
+    runtime: {
+      onMessage: {
+        addListener(listener) {
+          runtimeListener = listener;
+        },
+      },
+    },
+  };
+  const context = {
+    URL,
+    chrome,
+    crypto: webcrypto,
+    importScripts() {},
+    OurChoiceExtension: await extensionHelpers(),
+  };
+  context.globalThis = context;
+  const source = `${await text("browser-extension/background.js")}\nglobalThis.__testHandleMessage = handleMessage;`;
+  new Script(source).runInNewContext(context);
+  assert.equal(typeof runtimeListener, "function");
+  return { handleMessage: context.__testHandleMessage, storage, createdTabs, updatedTabs };
 }
 
 test("browser assistant manifest keeps permissions narrow and bridges only local app origins", async () => {
@@ -94,6 +144,50 @@ test("browser assistant follow snapshots report additive and non-destructive dif
   });
 });
 
+test("browser assistant keeps a completed follow scan pending until pairing is configured", async () => {
+  const current = [
+    { externalId: "946974", name: "影视飓风", url: "https://space.bilibili.com/946974" },
+  ];
+  const harness = await backgroundHarness({
+    ourChoiceBilibiliFollowV1: { active: true, current, previous: [] },
+  });
+
+  const response = await harness.handleMessage({ type: "OUR_CHOICE_FINISH_FOLLOW_SCAN" });
+
+  assert.equal(response.ok, false);
+  assert.match(response.error, /配对码/);
+  assert.deepEqual(harness.storage.ourChoiceBilibiliFollowV1, {
+    active: true,
+    current,
+    previous: [],
+  });
+  assert.equal(harness.storage.ourChoiceQueueV1, undefined);
+  assert.deepEqual(harness.createdTabs, []);
+});
+
+test("browser assistant opens an explicit handoff URL after a paired follow scan", async () => {
+  const harness = await backgroundHarness({
+    ourChoiceConfigV1: {
+      appUrl: "http://localhost:3000",
+      pairingCode: "paired-locally",
+      appTabId: null,
+    },
+    ourChoiceBilibiliFollowV1: {
+      active: true,
+      current: [
+        { externalId: "946974", name: "影视飓风", url: "https://space.bilibili.com/946974" },
+      ],
+      previous: [],
+    },
+  });
+
+  const response = await harness.handleMessage({ type: "OUR_CHOICE_FINISH_FOLLOW_SCAN" });
+
+  assert.equal(response.ok, true);
+  assert.equal(harness.storage.ourChoiceQueueV1.length, 1);
+  assert.deepEqual(harness.createdTabs, [{ url: "http://localhost:3000/#browser-assistant" }]);
+});
+
 test("browser assistant sanitizes captures without credentials or unsafe page data", async () => {
   const { sanitizeCapture } = await extensionHelpers();
   const capture = sanitizeCapture({
@@ -130,6 +224,9 @@ test("app exposes paired queue import, clip collection routing, and source dedup
   assert.match(app, /our-choice:assistant:v1/);
   assert.match(app, /OUR_CHOICE_PULL_QUEUE/);
   assert.match(app, /OUR_CHOICE_ACK_QUEUE/);
+  assert.match(app, /ASSISTANT_HANDOFF_HASH/);
+  assert.match(app, /正在连接浏览器助手/);
+  assert.match(app, /浏览器助手没有响应/);
   assert.match(app, /function BrowserAssistantModal/);
   assert.match(app, /浏览器助手/);
   assert.match(app, /检查待处理内容/);
