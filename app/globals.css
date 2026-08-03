@@ -4180,7 +4180,7 @@ a {
   gap: 8px;
 }
 
-.assistant-bilibili-content-picker {
+.bilibili-source-kind-picker {
   display: grid;
   gap: 7px;
   margin: 0;
@@ -4190,26 +4190,26 @@ a {
   background: rgba(243, 231, 235, 0.45);
 }
 
-.assistant-bilibili-content-picker legend {
+.bilibili-source-kind-picker legend {
   padding: 0 5px;
   color: var(--ink);
   font-size: 13px;
   font-weight: 720;
 }
 
-.assistant-bilibili-content-picker > p {
+.bilibili-source-kind-picker > p {
   margin: 0;
   color: var(--ink-muted);
   font-size: 11px;
 }
 
-.assistant-bilibili-content-picker > div {
+.bilibili-source-kind-picker > div {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
 }
 
-.assistant-bilibili-content-picker label {
+.bilibili-source-kind-picker label {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4221,32 +4221,53 @@ a {
   cursor: pointer;
 }
 
-.assistant-bilibili-content-picker label.is-selected {
+.bilibili-source-kind-picker label.is-selected {
   border-color: rgba(166, 72, 105, 0.55);
   box-shadow: inset 0 0 0 1px rgba(166, 72, 105, 0.12);
 }
 
-.assistant-bilibili-content-picker input {
-  accent-color: #a64869;
+.bilibili-source-kind-picker input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.assistant-bilibili-content-picker span {
+.bilibili-source-kind-picker span {
   min-width: 0;
 }
 
-.assistant-bilibili-content-picker strong,
-.assistant-bilibili-content-picker small {
+.bilibili-source-kind-picker strong,
+.bilibili-source-kind-picker small {
   display: block;
 }
 
-.assistant-bilibili-content-picker strong {
+.bilibili-source-kind-picker strong {
   font-size: 12px;
 }
 
-.assistant-bilibili-content-picker small {
+.bilibili-source-kind-picker small {
   margin-top: 2px;
   color: var(--ink-muted);
   font-size: 10px;
+}
+
+.bilibili-source-kind-picker label.is-unavailable {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.bilibili-source-kind-picker .scope-choice-check {
+  flex: 0 0 auto;
+}
+
+.bilibili-source-kind-picker label:not(.is-selected) .scope-choice-check {
+  background: #f0f1ed;
+  color: transparent;
+}
+
+.bilibili-source-kind-picker .bilibili-source-kind-count {
+  color: var(--ink-soft);
+  font-weight: 650;
 }
 
 .assistant-import-list article,
@@ -4378,7 +4399,7 @@ a {
     grid-column: 1;
   }
 
-  .assistant-bilibili-content-picker > div {
+  .bilibili-source-kind-picker > div {
     grid-template-columns: 1fr;
   }
 }

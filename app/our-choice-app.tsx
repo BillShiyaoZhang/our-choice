@@ -214,7 +214,7 @@ interface AssistantImportSelection {
   clipIds: string[];
   sourceKeys: string[];
   destinations: Record<string, string>;
-  bilibiliSourceKind: BilibiliBatchSourceKind;
+  bilibiliSourceKinds: BilibiliBatchSourceKind[];
 }
 
 type BilibiliBatchSourceKind =
@@ -252,6 +252,15 @@ function bilibiliPreviewOptionSourceKind(
     if (route.includes(`/bilibili/user/${candidate.id}/`)) return candidate.id;
   }
   return undefined;
+}
+
+function isBilibiliProfileCandidate(candidate: AssistantSourceCandidate) {
+  try {
+    const url = new URL(candidate.url);
+    return url.hostname === "space.bilibili.com" && /^\/\d+(?:\/|$)/.test(url.pathname);
+  } catch {
+    return false;
+  }
 }
 
 const navItems: Array<{
@@ -1653,19 +1662,31 @@ export function OurChoiceApp() {
       key: string;
       candidate: AssistantSourceCandidate;
       batchId?: string;
+      isBilibiliProfile: boolean;
     }> = [];
     for (const item of assistantQueue) {
       if (item.kind === "source") {
         const key = `${item.id}:${comparableSourceUrl(item.candidate.url)}`;
         if (selectedSourceKeys.has(key)) {
-          sourceRequests.push({ queueId: item.id, key, candidate: item.candidate });
+          sourceRequests.push({
+            queueId: item.id,
+            key,
+            candidate: item.candidate,
+            isBilibiliProfile: isBilibiliProfileCandidate(item.candidate),
+          });
         }
       }
       if (item.kind === "follow-batch") {
         for (const candidate of item.candidates) {
           const key = `${item.id}:${comparableSourceUrl(candidate.url)}`;
           if (selectedSourceKeys.has(key)) {
-            sourceRequests.push({ queueId: item.id, key, candidate, batchId: item.id });
+            sourceRequests.push({
+              queueId: item.id,
+              key,
+              candidate,
+              batchId: item.id,
+              isBilibiliProfile: true,
+            });
           }
         }
       }
@@ -1693,21 +1714,31 @@ export function OurChoiceApp() {
           try {
             let preview = await fetchPreview(request.candidate.url, 3);
             if (preview.mode === "select") {
-              const preferred = request.batchId
-                ? preview.options?.find(
-                    (option) =>
-                      bilibiliPreviewOptionSourceKind(option) === selection.bilibiliSourceKind,
-                  )
-                : preview.options?.find((option) => /投稿|视频/.test(option.title)) ??
-                  preview.options?.[0];
-              if (!preferred) {
+              const preferred = request.isBilibiliProfile
+                ? preview.options?.filter((option) => {
+                    const kind = bilibiliPreviewOptionSourceKind(option);
+                    return Boolean(kind && selection.bilibiliSourceKinds.includes(kind));
+                  }) ?? []
+                : [
+                    preview.options?.find((option) => /投稿|视频/.test(option.title)) ??
+                      preview.options?.[0],
+                  ].filter((option): option is PreviewOption => Boolean(option));
+              if (
+                !preferred.length ||
+                (request.isBilibiliProfile &&
+                  preferred.length !== selection.bilibiliSourceKinds.length)
+              ) {
                 throw new Error(
-                  request.batchId
-                    ? "这个 UP 主没有所选的内容范围"
+                  request.isBilibiliProfile
+                    ? "这个 B站用户没有所选的内容范围"
                     : "没有可用的订阅范围",
                 );
               }
-              preview = await fetchPreview(request.candidate.url, 3, [preferred.id]);
+              preview = await fetchPreview(
+                request.candidate.url,
+                3,
+                preferred.map((option) => option.id),
+              );
             }
             if (preview.mode === "select") throw new Error("仍需选择订阅范围");
             const baselineAt = preview.fetchedAt ?? new Date().toISOString();
@@ -3668,6 +3699,63 @@ function Modal({
   );
 }
 
+function BilibiliSourceKindPicker({
+  legend,
+  description,
+  selected,
+  available,
+  disabled = false,
+  onChange,
+}: {
+  legend: string;
+  description: string;
+  selected: BilibiliBatchSourceKind[];
+  available?: Set<BilibiliBatchSourceKind>;
+  disabled?: boolean;
+  onChange: (selected: BilibiliBatchSourceKind[]) => void;
+}) {
+  return (
+    <fieldset className="bilibili-source-kind-picker" disabled={disabled}>
+      <legend>{legend}</legend>
+      <p>{description}</p>
+      <div>
+        {bilibiliBatchSourceOptions.map((option) => {
+          const checked = selected.includes(option.id);
+          const unavailable = available ? !available.has(option.id) : false;
+          return (
+            <label
+              className={`${checked ? "is-selected" : ""} ${unavailable ? "is-unavailable" : ""}`.trim()}
+              key={option.id}
+            >
+              <input
+                type="checkbox"
+                value={option.id}
+                checked={checked}
+                disabled={disabled || unavailable}
+                onChange={(event) =>
+                  onChange(
+                    event.target.checked
+                      ? [...selected, option.id]
+                      : selected.filter((kind) => kind !== option.id),
+                  )
+                }
+              />
+              <span className="scope-choice-check">{checked && <Check size={13} />}</span>
+              <span>
+                <strong>{option.label}</strong>
+                <small>
+                  {unavailable ? "当前 RSSHub 未提供此范围" : option.description}
+                </small>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      <p className="bilibili-source-kind-count">已选择 {selected.length} 项；这些内容会合并为一个来源。</p>
+    </fieldset>
+  );
+}
+
 function SourceSettingsModal({
   source,
   onClose,
@@ -3772,6 +3860,20 @@ function SourceSettingsModal({
     );
   }
 
+  const bilibiliScopeOptions =
+    source.platform === "bilibili"
+      ? (scopeOptions ?? []).flatMap((option) => {
+          const kind = bilibiliPreviewOptionSourceKind(option);
+          return kind ? [{ kind, option }] : [];
+        })
+      : [];
+  const availableBilibiliScopeKinds = new Set(
+    bilibiliScopeOptions.map(({ kind }) => kind),
+  );
+  const selectedBilibiliScopeKinds = bilibiliScopeOptions
+    .filter(({ option }) => selectedScopeIds.includes(option.id))
+    .map(({ kind }) => kind);
+
   return (
     <Modal
       title={`设置 ${source.name}`}
@@ -3860,6 +3962,21 @@ function SourceSettingsModal({
                   <span key={selection.id}>{selection.title}</span>
                 ))}
               </div>
+            ) : source.platform === "bilibili" ? (
+              <BilibiliSourceKindPicker
+                legend="选择以后持续更新的内容源"
+                description="可以同时保留多个范围；修改后不会删除已经保存的内容。"
+                selected={selectedBilibiliScopeKinds}
+                available={availableBilibiliScopeKinds}
+                disabled={loading}
+                onChange={(kinds) =>
+                  setSelectedScopeIds(
+                    bilibiliScopeOptions
+                      .filter(({ kind }) => kinds.includes(kind))
+                      .map(({ option }) => option.id),
+                  )
+                }
+              />
             ) : (
               <div className="source-settings-scope-list">
                 {scopeOptions.map((option) => {
@@ -4017,7 +4134,13 @@ function AddSubscriptionModal({
       setPreview(result);
       if (result.mode === "select") {
         setSelectionPreview(result);
-        setSelectedOptionIds([]);
+        const defaultBilibiliOption =
+          result.source.kind === "bilibili"
+            ? result.options?.find(
+                (option) => bilibiliPreviewOptionSourceKind(option) === "video",
+              )
+            : undefined;
+        setSelectedOptionIds(defaultBilibiliOption ? [defaultBilibiliOption.id] : []);
       } else {
         setName(result.source.title);
       }
@@ -4034,6 +4157,20 @@ function AddSubscriptionModal({
     setSelectedOptionIds([]);
     await loadPreview();
   }
+
+  const bilibiliSelectableOptions =
+    preview?.mode === "select" && preview.source.kind === "bilibili"
+      ? (preview.options ?? []).flatMap((option) => {
+          const kind = bilibiliPreviewOptionSourceKind(option);
+          return kind ? [{ kind, option }] : [];
+        })
+      : [];
+  const availableBilibiliKinds = new Set(
+    bilibiliSelectableOptions.map(({ kind }) => kind),
+  );
+  const selectedBilibiliKinds = bilibiliSelectableOptions
+    .filter(({ option }) => selectedOptionIds.includes(option.id))
+    .map(({ kind }) => kind);
 
   return (
     <Modal
@@ -4162,38 +4299,57 @@ function AddSubscriptionModal({
             </div>
             {preview.mode === "select" ? (
               <div className="subscription-choice-panel">
-                <div>
-                  <strong>选择要订阅的内容</strong>
-                  <p>{preview.source.description}</p>
-                </div>
-                <div className="subscription-choice-list">
-                  {preview.options?.map((option) => (
-                    <label
-                      className={selectedOptionIds.includes(option.id) ? "is-selected" : ""}
-                      key={option.id}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedOptionIds.includes(option.id)}
-                        disabled={loading}
-                        onChange={(event) => {
-                          setSelectedOptionIds((current) =>
-                            event.target.checked
-                              ? [...current, option.id]
-                              : current.filter((id) => id !== option.id),
-                          );
-                        }}
-                      />
-                      <span className="scope-choice-check">
-                        {selectedOptionIds.includes(option.id) && <Check size={13} />}
-                      </span>
-                      <div><strong>{option.title}</strong><p>{option.description}</p></div>
-                    </label>
-                  ))}
-                </div>
-                <p className="scope-selection-count">
-                  已选择 {selectedOptionIds.length} 项；这些内容会合并为一个来源。
-                </p>
+                {preview.source.kind === "bilibili" ? (
+                  <BilibiliSourceKindPicker
+                    legend="选择要订阅的内容源"
+                    description="可以同时选择多个范围；它们会合并为同一个 B站来源。"
+                    selected={selectedBilibiliKinds}
+                    available={availableBilibiliKinds}
+                    disabled={loading}
+                    onChange={(kinds) =>
+                      setSelectedOptionIds(
+                        bilibiliSelectableOptions
+                          .filter(({ kind }) => kinds.includes(kind))
+                          .map(({ option }) => option.id),
+                      )
+                    }
+                  />
+                ) : (
+                  <>
+                    <div>
+                      <strong>选择要订阅的内容</strong>
+                      <p>{preview.source.description}</p>
+                    </div>
+                    <div className="subscription-choice-list">
+                      {preview.options?.map((option) => (
+                        <label
+                          className={selectedOptionIds.includes(option.id) ? "is-selected" : ""}
+                          key={option.id}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedOptionIds.includes(option.id)}
+                            disabled={loading}
+                            onChange={(event) => {
+                              setSelectedOptionIds((current) =>
+                                event.target.checked
+                                  ? [...current, option.id]
+                                  : current.filter((id) => id !== option.id),
+                              );
+                            }}
+                          />
+                          <span className="scope-choice-check">
+                            {selectedOptionIds.includes(option.id) && <Check size={13} />}
+                          </span>
+                          <div><strong>{option.title}</strong><p>{option.description}</p></div>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="scope-selection-count">
+                      已选择 {selectedOptionIds.length} 项；这些内容会合并为一个来源。
+                    </p>
+                  </>
+                )}
               </div>
             ) : (
               <>
@@ -4587,11 +4743,12 @@ function BrowserAssistantModal({
   const sourceRows = queue.flatMap((item) => {
     if (item.kind === "source") {
       const normalized = comparableSourceUrl(item.candidate.url);
+      const isBilibili = isBilibiliProfileCandidate(item.candidate);
       return [{
         key: `${item.id}:${normalized}`,
         queueId: item.id,
         candidate: item.candidate,
-        platform: "网页来源",
+        platform: isBilibili ? "B站" : "网页来源",
         duplicate: existingUrls.has(normalized),
         newlyFollowed: true,
       }];
@@ -4618,8 +4775,8 @@ function BrowserAssistantModal({
       .map((row) => row.key),
   );
   const hasBilibiliBatch = sourceRows.some((row) => row.platform === "B站");
-  const [bilibiliSourceKind, setBilibiliSourceKind] =
-    useState<BilibiliBatchSourceKind>("video");
+  const [bilibiliSourceKinds, setBilibiliSourceKinds] =
+    useState<BilibiliBatchSourceKind[]>(["video"]);
   const [destinations, setDestinations] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       clipItems.map((item) => [
@@ -4633,6 +4790,9 @@ function BrowserAssistantModal({
 
   const missingDestination = clipItems.some(
     (item) => selectedClipIds.includes(item.id) && !destinations[item.id],
+  );
+  const hasSelectedBilibiliSource = sourceRows.some(
+    (row) => row.platform === "B站" && selectedSourceKeys.includes(row.key),
   );
   const selectedCount = selectedClipIds.length + selectedSourceKeys.length;
 
@@ -4720,27 +4880,13 @@ function BrowserAssistantModal({
               </button>
             </div>
             {hasBilibiliBatch && (
-              <fieldset className="assistant-bilibili-content-picker" disabled={importing}>
-                <legend>这次统一导入哪个内容源？</legend>
-                <p>固定展示 UP 主主页可发现的 9 类来源；所选范围会应用到本次所有 B站 UP 主。</p>
-                <div className="assistant-bilibili-options">
-                  {bilibiliBatchSourceOptions.map((option) => (
-                    <label
-                      className={bilibiliSourceKind === option.id ? "is-selected" : ""}
-                      key={option.id}
-                    >
-                      <input
-                        type="radio"
-                        name="assistant-bilibili-source-kind"
-                        value={option.id}
-                        checked={bilibiliSourceKind === option.id}
-                        onChange={() => setBilibiliSourceKind(option.id)}
-                      />
-                      <span><strong>{option.label}</strong><small>{option.description}</small></span>
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
+              <BilibiliSourceKindPicker
+                legend="这次统一导入哪些内容源？"
+                description="固定展示 UP 主主页可发现的 9 类来源；所选范围会应用到本次所有 B站 UP 主。"
+                selected={bilibiliSourceKinds}
+                disabled={importing}
+                onChange={setBilibiliSourceKinds}
+              />
             )}
             <div className="assistant-source-list">
               {sourceRows.map((row) => {
@@ -4786,12 +4932,17 @@ function BrowserAssistantModal({
           <button
             className="primary-button"
             type="button"
-            disabled={importing || selectedCount === 0 || missingDestination}
+            disabled={
+              importing ||
+              selectedCount === 0 ||
+              missingDestination ||
+              (hasSelectedBilibiliSource && bilibiliSourceKinds.length === 0)
+            }
             onClick={() => onConfirm({
               clipIds: selectedClipIds,
               sourceKeys: selectedSourceKeys,
               destinations,
-              bilibiliSourceKind,
+              bilibiliSourceKinds,
             })}
           >
             {importing ? <RefreshCw className="is-spinning" size={16} /> : <CheckCheck size={16} />}
