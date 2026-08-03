@@ -408,6 +408,17 @@ test("app exposes paired queue import, clip collection routing, and source dedup
   assert.match(app, /取消关注只供确认，不会自动删除/);
   assert.match(app, /Promise\.all/);
   assert.match(app, /Math\.min\(3,/);
+  assert.match(app, /bilibiliSourceKind/);
+  assert.match(app, /这次统一导入哪个内容源/);
+  assert.match(app, /固定展示 UP 主主页可发现的 9 类来源/);
+  assert.match(app, /bilibiliPreviewOptionSourceKind\(option\) === selection\.bilibiliSourceKind/);
+  assert.match(app, /name="assistant-bilibili-source-kind"/);
+  for (const sourceKind of [
+    "article", "coin", "dynamic", "followers", "followings", "like", "bangumi", "fav", "video",
+  ]) {
+    assert.match(app, new RegExp(`id: "${sourceKind}"`));
+  }
+  assert.match(app, /需要登录 UID 与 B站 Cookie/);
   assert.match(app, /imageUrl:\s*request\.candidate\.imageUrl\s*\?\?\s*preview\.source\.imageUrl/);
   assert.match(app, /source\?\.imageUrl/);
   assert.match(model, /capturedAt\?: string/);

@@ -440,6 +440,59 @@ test("a selected RSSHub candidate is rediscovered and fetched", async () => {
   }
 });
 
+test("Bilibili relationship Radar routes use the configured login slot and verify the creator", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+  const sourceUrl = "https://space.bilibili.com/946974";
+  const requestedUrls = [];
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    requestedUrls.push(url);
+    if (url === "https://rsshub.example/api/radar/rules/bilibili.com") {
+      return Response.json({
+        space: [
+          { title: "UP 主粉丝", source: ["/:uid"], target: "/bilibili/user/followers/:uid" },
+          { title: "UP 主投稿", source: ["/:uid"], target: "/bilibili/user/video/:uid" },
+        ],
+      });
+    }
+    if (url === "https://rsshub.example/bilibili/user/followers/946974/1") {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>影视飓风的粉丝</title><link>${sourceUrl}</link><item><title>新增粉丝</title><link>https://space.bilibili.com/1</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: sourceUrl,
+          selection: "radar:/bilibili/user/followers/946974/1",
+        }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+    assert.equal(payload.mode, "live");
+    assert.equal(payload.source.identityVerified, true);
+    assert.equal(payload.source.rsshubSelection, "radar:/bilibili/user/followers/946974/1");
+    assert.equal(payload.items[0].title, "新增粉丝");
+    assert.ok(requestedUrls.includes("https://rsshub.example/bilibili/user/followers/946974/1"));
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
+  }
+});
+
 test("multiple selected RSSHub candidates merge into one source and deduplicate items", async () => {
   const previousBaseUrl = process.env.RSSHUB_BASE_URL;
   const originalFetch = globalThis.fetch;

@@ -127,6 +127,23 @@ interface PreviewFailure {
 }
 
 type PreviewResponse = PreviewSuccess | PreviewFailure;
+type PreviewOption = NonNullable<PreviewSuccess["options"]>[number];
+
+async function fetchPreview(
+  url: string,
+  limit = 12,
+  selections?: string[],
+  manual?: RssHubManualSubscription,
+) {
+  const response = await fetch("/api/source-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: url || undefined, limit, selections, manual }),
+  });
+  const result = (await response.json()) as PreviewResponse;
+  if (!result.ok) throw new Error(result.error.message);
+  return result;
+}
 
 interface ToastState {
   message: string;
@@ -197,6 +214,44 @@ interface AssistantImportSelection {
   clipIds: string[];
   sourceKeys: string[];
   destinations: Record<string, string>;
+  bilibiliSourceKind: BilibiliBatchSourceKind;
+}
+
+type BilibiliBatchSourceKind =
+  | "article"
+  | "coin"
+  | "dynamic"
+  | "followers"
+  | "followings"
+  | "like"
+  | "bangumi"
+  | "fav"
+  | "video";
+
+const bilibiliBatchSourceOptions: Array<{
+  id: BilibiliBatchSourceKind;
+  label: string;
+  description: string;
+}> = [
+  { id: "article", label: "UP 主图文", description: "图文与专栏更新" },
+  { id: "coin", label: "UP 主投币视频", description: "公开可见的最近投币视频" },
+  { id: "dynamic", label: "UP 主动态", description: "动态、转发、图文与视频" },
+  { id: "followers", label: "UP 主粉丝", description: "需要登录 UID 与 B站 Cookie" },
+  { id: "followings", label: "UP 主关注用户", description: "需要登录 UID 与 B站 Cookie" },
+  { id: "like", label: "UP 主点赞视频", description: "公开可见的最近点赞视频" },
+  { id: "bangumi", label: "用户追番列表", description: "公开可见的追番与追剧列表" },
+  { id: "fav", label: "UP 主默认收藏夹", description: "公开的默认收藏夹视频" },
+  { id: "video", label: "UP 主投稿", description: "投稿视频 · 反爬限制较严格" },
+];
+
+function bilibiliPreviewOptionSourceKind(
+  option: PreviewOption,
+): BilibiliBatchSourceKind | undefined {
+  const route = option.id.toLowerCase();
+  for (const candidate of bilibiliBatchSourceOptions) {
+    if (route.includes(`/bilibili/user/${candidate.id}/`)) return candidate.id;
+  }
+  return undefined;
 }
 
 const navItems: Array<{
@@ -1178,22 +1233,6 @@ export function OurChoiceApp() {
     });
   }
 
-  async function fetchPreview(
-    url: string,
-    limit = 12,
-    selections?: string[],
-    manual?: RssHubManualSubscription,
-  ) {
-    const response = await fetch("/api/source-preview", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: url || undefined, limit, selections, manual }),
-    });
-    const result = (await response.json()) as PreviewResponse;
-    if (!result.ok) throw new Error(result.error.message);
-    return result;
-  }
-
   async function refreshSources(sourceIds?: string[]) {
     if (syncing) return;
     const candidates = activeSources.filter(
@@ -1654,10 +1693,20 @@ export function OurChoiceApp() {
           try {
             let preview = await fetchPreview(request.candidate.url, 3);
             if (preview.mode === "select") {
-              const preferred =
-                preview.options?.find((option) => /投稿|视频/.test(option.title)) ??
-                preview.options?.[0];
-              if (!preferred) throw new Error("没有可用的订阅范围");
+              const preferred = request.batchId
+                ? preview.options?.find(
+                    (option) =>
+                      bilibiliPreviewOptionSourceKind(option) === selection.bilibiliSourceKind,
+                  )
+                : preview.options?.find((option) => /投稿|视频/.test(option.title)) ??
+                  preview.options?.[0];
+              if (!preferred) {
+                throw new Error(
+                  request.batchId
+                    ? "这个 UP 主没有所选的内容范围"
+                    : "没有可用的订阅范围",
+                );
+              }
               preview = await fetchPreview(request.candidate.url, 3, [preferred.id]);
             }
             if (preview.mode === "select") throw new Error("仍需选择订阅范围");
@@ -4568,6 +4617,9 @@ function BrowserAssistantModal({
       .filter((row) => !row.duplicate && row.newlyFollowed)
       .map((row) => row.key),
   );
+  const hasBilibiliBatch = sourceRows.some((row) => row.platform === "B站");
+  const [bilibiliSourceKind, setBilibiliSourceKind] =
+    useState<BilibiliBatchSourceKind>("video");
   const [destinations, setDestinations] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       clipItems.map((item) => [
@@ -4667,6 +4719,29 @@ function BrowserAssistantModal({
                 全选可导入项
               </button>
             </div>
+            {hasBilibiliBatch && (
+              <fieldset className="assistant-bilibili-content-picker" disabled={importing}>
+                <legend>这次统一导入哪个内容源？</legend>
+                <p>固定展示 UP 主主页可发现的 9 类来源；所选范围会应用到本次所有 B站 UP 主。</p>
+                <div className="assistant-bilibili-options">
+                  {bilibiliBatchSourceOptions.map((option) => (
+                    <label
+                      className={bilibiliSourceKind === option.id ? "is-selected" : ""}
+                      key={option.id}
+                    >
+                      <input
+                        type="radio"
+                        name="assistant-bilibili-source-kind"
+                        value={option.id}
+                        checked={bilibiliSourceKind === option.id}
+                        onChange={() => setBilibiliSourceKind(option.id)}
+                      />
+                      <span><strong>{option.label}</strong><small>{option.description}</small></span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            )}
             <div className="assistant-source-list">
               {sourceRows.map((row) => {
                 const checked = selectedSourceKeys.includes(row.key);
@@ -4712,7 +4787,12 @@ function BrowserAssistantModal({
             className="primary-button"
             type="button"
             disabled={importing || selectedCount === 0 || missingDestination}
-            onClick={() => onConfirm({ clipIds: selectedClipIds, sourceKeys: selectedSourceKeys, destinations })}
+            onClick={() => onConfirm({
+              clipIds: selectedClipIds,
+              sourceKeys: selectedSourceKeys,
+              destinations,
+              bilibiliSourceKind,
+            })}
           >
             {importing ? <RefreshCw className="is-spinning" size={16} /> : <CheckCheck size={16} />}
             {importing ? "正在导入" : `确认导入 ${selectedCount} 项`}

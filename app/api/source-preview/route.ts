@@ -687,7 +687,7 @@ function verifyRssHubSourceIdentity(
   if (!expectedId) return false;
 
   const routeId = match.route.match(
-    /^\/bilibili\/user\/(?:video|article|dynamic)\/(\d+)(?:\/|$)/,
+    /^\/bilibili\/user\/(?:article|bangumi|coin|dynamic|fav|followers|followings|like|video)\/(\d+)(?:\/|$)/,
   )?.[1];
   const returnedId = bilibiliProfileId(siteUrl);
   if (routeId !== expectedId || returnedId !== expectedId) {
@@ -1035,6 +1035,20 @@ function dedupeRadarMatches(matches: RadarMatch[]) {
   return [...new Map(matches.map((match) => [match.id, match])).values()];
 }
 
+function normalizePlatformRadarMatch(
+  match: RadarMatch,
+  platform?: LinkPlatform,
+): RadarMatch {
+  if (
+    platform?.kind === "bilibili" &&
+    /^\/bilibili\/user\/(?:followers|followings)\/\d+$/.test(match.route)
+  ) {
+    const route = `${match.route}/1`;
+    return { ...match, id: `radar:${route}`, route };
+  }
+  return match;
+}
+
 async function discoverRssHubRoutes(
   config: RssHubConfig,
   url: URL,
@@ -1064,7 +1078,9 @@ async function discoverRssHubRoutes(
     }
   }
 
-  const unique = dedupeRadarMatches(matches);
+  const unique = dedupeRadarMatches(
+    matches.map((match) => normalizePlatformRadarMatch(match, platform)),
+  );
   if (preferredTitle) {
     const preferred = unique.filter((match) => match.title === preferredTitle);
     if (preferred.length > 0) return preferred;
