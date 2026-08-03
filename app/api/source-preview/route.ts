@@ -30,6 +30,7 @@ type PreviewErrorCode =
   | "UPSTREAM_HTTP"
   | "FEED_TOO_LARGE"
   | "PARSE_FAILED"
+  | "SOURCE_MISMATCH"
   | "INVALID_SELECTION"
   | "RSSHUB_NOT_CONFIGURED";
 
@@ -625,7 +626,12 @@ type ManualSubscription =
 type RssHubOutcome =
   | { kind: "success"; payload: unknown }
   | { kind: "no-route" }
-  | { kind: "failed"; message: string; match?: RadarMatch };
+  | {
+      kind: "failed";
+      message: string;
+      match?: RadarMatch;
+      reason?: "source-mismatch";
+    };
 
 function hostnameMatches(hostname: string, expected: string) {
   return hostname === expected || hostname.endsWith(`.${expected}`);
@@ -657,6 +663,42 @@ function normalizePlatformUrl(url: URL) {
   }
 
   return { url: normalized, preferredTitle };
+}
+
+function bilibiliProfileId(raw: string | undefined) {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    if (url.hostname !== "space.bilibili.com") return undefined;
+    return url.pathname.match(/^\/(\d+)(?:\/|$)/)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+function verifyRssHubSourceIdentity(
+  initialUrl: URL,
+  platform: LinkPlatform | undefined,
+  match: RadarMatch,
+  siteUrl: string | undefined,
+) {
+  if (platform?.kind !== "bilibili") return false;
+  const expectedId = bilibiliProfileId(initialUrl.href);
+  if (!expectedId) return false;
+
+  const routeId = match.route.match(
+    /^\/bilibili\/user\/(?:video|article|dynamic)\/(\d+)(?:\/|$)/,
+  )?.[1];
+  const returnedId = bilibiliProfileId(siteUrl);
+  if (routeId !== expectedId || returnedId !== expectedId) {
+    throw new PreviewError(
+      "SOURCE_MISMATCH",
+      "RSSHub 返回的内容与所选 B站 UP 主不一致，已拒绝把这些条目加入来源。",
+      true,
+      502,
+    );
+  }
+  return true;
 }
 
 function platformCredentialHint(platform?: LinkPlatform) {
@@ -1060,6 +1102,12 @@ async function tryRssHubPreview(
       limit,
     );
     const safeSource = { ...parsed.source, feedUrl: undefined };
+    const identityVerified = verifyRssHubSourceIdentity(
+      initialUrl,
+      platform,
+      match,
+      safeSource.siteUrl,
+    );
     const parsedTitle = safeSource.title?.trim();
     const title =
       !parsedTitle || /^(undefined|null)(?:\b|\s)/i.test(parsedTitle)
@@ -1100,6 +1148,7 @@ async function tryRssHubPreview(
           routeTitle: match.title,
           docsUrl: match.docs,
           manualSubscription,
+          identityVerified: identityVerified || undefined,
         },
         items,
         fetchedAt: new Date().toISOString(),
@@ -1109,6 +1158,10 @@ async function tryRssHubPreview(
     return {
       kind: "failed",
       match,
+      reason:
+        error instanceof PreviewError && error.code === "SOURCE_MISMATCH"
+          ? "source-mismatch"
+          : undefined,
       message:
         error instanceof PreviewError
           ? error.message
@@ -1160,10 +1213,15 @@ async function tryCombinedRssHubPreview(
     fetchedAt?: string;
   }>;
   const failures = outcomes.filter((outcome) => outcome.kind === "failed");
+  const sourceMismatch = failures.find(
+    (outcome) => outcome.kind === "failed" && outcome.reason === "source-mismatch",
+  );
+  if (sourceMismatch?.kind === "failed") return sourceMismatch;
   if (!successes.length) {
     return {
       kind: "failed",
       match: matches[0],
+      reason: failures[0]?.kind === "failed" ? failures[0].reason : undefined,
       message:
         failures[0]?.kind === "failed"
           ? failures[0].message
@@ -1329,6 +1387,7 @@ function platformLinkPreview(
   rssHubFallback?: "no-route" | "failed",
   matches: RadarMatch[] = [],
   attempted?: RadarMatch,
+  failureReason?: "source-mismatch",
 ) {
   if (!platform) return null;
 
@@ -1361,8 +1420,15 @@ function platformLinkPreview(
     warning:
       rssHubFallback === "failed"
         ? {
-            code: attempted ? "RSSHUB_ROUTE_FAILED" : "RSSHUB_FALLBACK",
-            message: attempted
+            code:
+              failureReason === "source-mismatch"
+                ? "RSSHUB_SOURCE_MISMATCH"
+                : attempted
+                  ? "RSSHUB_ROUTE_FAILED"
+                  : "RSSHUB_FALLBACK",
+            message: failureReason === "source-mismatch"
+              ? "RSSHub 返回的内容不属于这个 B站 UP 主；已停止导入，并会清理未收藏的可疑条目。"
+              : attempted
               ? `RSSHub 路由${attempted.title ? `「${attempted.title}」` : ""}暂时无法生成内容，已保留链接。${platformCredentialHint(platform) ?? "可以稍后重试或改选其他订阅范围。"}`
               : `RSSHub 暂时无法转换这个${platform.label}来源，已安全降级为站内链接；稍后可以重新识别。`,
           }
@@ -1554,6 +1620,7 @@ export async function POST(request: Request) {
           outcome.kind,
           matches,
           outcome.kind === "failed" ? outcome.match : undefined,
+          outcome.kind === "failed" ? outcome.reason : undefined,
         )!;
         return json(
           selectedMatches.length

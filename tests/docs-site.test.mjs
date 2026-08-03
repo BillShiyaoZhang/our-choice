@@ -145,6 +145,16 @@ test("opens source details by content type and respects Bilibili video open pref
   assert.match(model, /bilibiliOpenMode\?: "embedded" \| "external"/);
 });
 
+test("supports selecting all subscription sources for a confirmed batch delete", async () => {
+  const app = await text("app/our-choice-app.tsx");
+
+  assert.match(app, /selectedSourceIds/);
+  assert.match(app, /全选来源/);
+  assert.match(app, /删除所选/);
+  assert.match(app, /删除选中的 \$\{count\} 个来源/);
+  assert.match(app, /已经加入稍后看或合集的内容会保留/);
+});
+
 test("deploys docs through a least-privilege GitHub Pages workflow", async () => {
   const workflow = await text(".github/workflows/docs-pages.yml");
 

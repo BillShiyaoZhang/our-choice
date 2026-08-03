@@ -102,6 +102,7 @@ interface PreviewSuccess {
     rsshubSelection?: string;
     rsshubSelections?: RssHubSelection[];
     manualSubscription?: RssHubManualSubscription;
+    identityVerified?: boolean;
     routeTitle?: string;
     docsUrl?: string;
     siteUrl?: string;
@@ -442,12 +443,38 @@ function normalizeAppData(value: unknown): AppData | null {
   }
 
   const now = new Date().toISOString();
-  const items = (candidate.items as ContentItem[]).map((item) => ({
-    ...item,
-    isNew: item.isNew ?? !item.read,
-    discoveredAt: item.discoveredAt ?? item.publishedAt ?? now,
-    viewedAt: item.viewedAt ?? (item.read ? item.publishedAt ?? now : undefined),
-  }));
+  const items = (candidate.items as ContentItem[]).map((item) => {
+    const discoveredAt = item.discoveredAt ?? item.publishedAt ?? now;
+    const publishedTime = new Date(item.publishedAt).getTime();
+    const discoveredTime = new Date(discoveredAt).getTime();
+    const looksLikeLegacyDiscoveryFallback =
+      item.publishedAtReliable === undefined &&
+      !item.isDemo &&
+      item.id.startsWith("feed-") &&
+      item.discoveredAt !== undefined &&
+      Number.isFinite(publishedTime) &&
+      Number.isFinite(discoveredTime) &&
+      Math.abs(publishedTime - discoveredTime) < 5_000;
+    const publishedAtReliable = looksLikeLegacyDiscoveryFallback
+      ? false
+      : item.publishedAtReliable !== false;
+    const isNew = item.isNew ?? !item.read;
+    return {
+      ...item,
+      isNew,
+      publishedAtReliable,
+      publishedLabel: publishedAtReliable
+        ? item.publishedLabel
+        : `${relativeTimeLabel(discoveredAt)}发现`,
+      dateGroup: publishedAtReliable
+        ? item.dateGroup
+        : isNew
+          ? dateGroup(discoveredAt)
+          : "更早",
+      discoveredAt,
+      viewedAt: item.viewedAt ?? (item.read ? item.publishedAt ?? now : undefined),
+    };
+  });
   const sources = (candidate.sources as Source[]).map<Source>((source) => ({
     ...source,
     imageUrl: normalizedPublicUrl(source.imageUrl) || undefined,
@@ -499,6 +526,7 @@ export function OurChoiceApp() {
   const [addOpen, setAddOpen] = useState(false);
   const [sourceDetailId, setSourceDetailId] = useState<string | null>(null);
   const [sourceSettingsId, setSourceSettingsId] = useState<string | null>(null);
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [saveItemId, setSaveItemId] = useState<string | null>(null);
@@ -757,6 +785,7 @@ export function OurChoiceApp() {
   function goTo(next: View) {
     setViewer(null);
     setSourceDetailId(null);
+    if (next !== "subscriptions") setSelectedSourceIds([]);
     setView(next);
     setMobileMenuOpen(false);
     setQuery("");
@@ -1059,6 +1088,8 @@ export function OurChoiceApp() {
       danger: true,
       onConfirm: () => {
         if (sourceDetailId === source.id) setSourceDetailId(null);
+        if (sourceSettingsId === source.id) setSourceSettingsId(null);
+        setSelectedSourceIds((current) => current.filter((id) => id !== source.id));
         setData((current) => ({
           ...current,
           sources: current.sources.map((candidate) =>
@@ -1076,32 +1107,75 @@ export function OurChoiceApp() {
     });
   }
 
+  function requestRemoveSelectedSources() {
+    const selectedIds = new Set(selectedSourceIds);
+    const selectedSources = activeSources.filter((source) => selectedIds.has(source.id));
+    if (!selectedSources.length) return;
+
+    const sourceIds = new Set(selectedSources.map((source) => source.id));
+    const count = selectedSources.length;
+    setConfirmState({
+      title: `删除选中的 ${count} 个来源？`,
+      description: "之后不再获取这些来源的新内容；已经加入稍后看或合集的内容会保留。",
+      confirmLabel: `删除 ${count} 个来源`,
+      danger: true,
+      onConfirm: () => {
+        if (sourceDetailId && sourceIds.has(sourceDetailId)) setSourceDetailId(null);
+        if (sourceSettingsId && sourceIds.has(sourceSettingsId)) setSourceSettingsId(null);
+        setSelectedSourceIds([]);
+        setData((current) => ({
+          ...current,
+          sources: current.sources.map((source) =>
+            sourceIds.has(source.id)
+              ? { ...source, archived: true, enabled: false, unreadCount: 0 }
+              : source,
+          ),
+          items: current.items.filter(
+            (item) => !sourceIds.has(item.sourceId) || item.collectionIds.length > 0,
+          ),
+        }));
+        setConfirmState(null);
+        showToast({ message: `已删除 ${count} 个来源` });
+      },
+    });
+  }
+
   function normalizePreviewItems(
     source: Source,
     items: PreviewItem[],
     options: { isNew: boolean; discoveredAt?: string } = { isNew: true },
   ) {
     const discoveredAt = options.discoveredAt ?? new Date().toISOString();
-    return items.map<ContentItem>((item, index) => ({
-      id: `feed-${source.id}-${stableKey(item.upstreamId || item.url || String(index))}`,
-      sourceId: source.id,
-      title: item.title,
-      summary: item.summary || "打开原站查看这条更新。",
-      type: item.type,
-      url: item.url,
-      publishedAt: item.publishedAt,
-      publishedLabel: relativeTimeLabel(item.publishedAt),
-      dateGroup: dateGroup(item.publishedAt),
-      duration: item.duration,
-      read: false,
-      isNew: options.isNew,
-      discoveredAt,
-      thumbnailUrl: item.thumbnailUrl,
-      tone: source.tone,
-      visualLabel:
-        item.type === "video" ? "WATCH / NEW" : item.type === "podcast" ? "LISTEN / NEW" : "READ / NEW",
-      collectionIds: [],
-    }));
+    return items.map<ContentItem>((item, index) => {
+      const publishedAtReliable = item.publishedAtReliable !== false;
+      return {
+        id: `feed-${source.id}-${stableKey(item.upstreamId || item.url || String(index))}`,
+        sourceId: source.id,
+        title: item.title,
+        summary: item.summary || "打开原站查看这条更新。",
+        type: item.type,
+        url: item.url,
+        publishedAt: item.publishedAt,
+        publishedAtReliable,
+        publishedLabel: publishedAtReliable
+          ? relativeTimeLabel(item.publishedAt)
+          : `${relativeTimeLabel(discoveredAt)}发现`,
+        dateGroup: publishedAtReliable
+          ? dateGroup(item.publishedAt)
+          : options.isNew
+            ? dateGroup(discoveredAt)
+            : "更早",
+        duration: item.duration,
+        read: false,
+        isNew: options.isNew,
+        discoveredAt,
+        thumbnailUrl: item.thumbnailUrl,
+        tone: source.tone,
+        visualLabel:
+          item.type === "video" ? "WATCH / NEW" : item.type === "podcast" ? "LISTEN / NEW" : "READ / NEW",
+        collectionIds: [],
+      };
+    });
   }
 
   async function fetchPreview(
@@ -1177,10 +1251,35 @@ export function OurChoiceApp() {
         isNew: false,
         discoveredAt,
       });
-      const knownIds = new Set(result.source.knownItemIds ?? []);
+      const firstIdentityVerification =
+        result.source.platform === "bilibili" &&
+        result.preview.source.identityVerified === true &&
+        result.source.identityVerified !== true;
+      const knownIds = new Set(
+        firstIdentityVerification ? [] : (result.source.knownItemIds ?? []),
+      );
+      const existingSourceUrls = new Set(
+        data.items
+          .filter((item) => item.sourceId === result.source.id)
+          .map((item) => item.url),
+      );
+      const preservedSourceUrls = new Set(
+        data.items
+          .filter(
+            (item) => item.sourceId === result.source.id && item.collectionIds.length > 0,
+          )
+          .map((item) => item.url),
+      );
       const addedAt = new Date(result.source.addedAt ?? result.source.baselineAt ?? 0).getTime();
       const additions = normalized
-        .filter((item) => !knownIds.has(item.id) && !existingUrls.has(item.url))
+        .filter(
+          (item) =>
+            !knownIds.has(item.id) &&
+            (!existingUrls.has(item.url) ||
+              (firstIdentityVerification &&
+                existingSourceUrls.has(item.url) &&
+                !preservedSourceUrls.has(item.url))),
+        )
         .map((item) => {
           const normalizedIndex = normalized.findIndex((candidate) => candidate.id === item.id);
           const previewItem = result.preview?.items[normalizedIndex];
@@ -1192,34 +1291,73 @@ export function OurChoiceApp() {
               hasReliableDate && Number.isFinite(publishedAt)
                 ? publishedAt > addedAt
                 : Boolean(result.source.baselineAt),
+            dateGroup:
+              !hasReliableDate && result.source.baselineAt
+                ? dateGroup(item.discoveredAt ?? discoveredAt)
+                : item.dateGroup,
           };
         });
       for (const item of additions) existingUrls.add(item.url);
-      return { ...result, additions, observedIds: normalized.map((item) => item.id) };
+      return {
+        ...result,
+        additions,
+        observedIds: normalized.map((item) => item.id),
+        firstIdentityVerification,
+      };
     });
     const totalNew = prepared.reduce(
       (total, result) => total + result.additions.filter(itemIsNew).length,
       0,
     );
+    const mismatchedSourceIds = new Set(
+      results
+        .filter((result) => result.preview?.warning?.code === "RSSHUB_SOURCE_MISMATCH")
+        .map((result) => result.source.id),
+    );
+    const reverifiedSourceIds = new Set(
+      prepared
+        .filter((result) => result.firstIdentityVerification)
+        .map((result) => result.source.id),
+    );
 
     setData((current) => {
-      let items = [...current.items];
-      const sourceUpdates = new Map<string, number>();
+      let items = current.items.filter(
+        (item) =>
+          (!mismatchedSourceIds.has(item.sourceId) &&
+            !reverifiedSourceIds.has(item.sourceId)) ||
+          item.collectionIds.length > 0,
+      );
+      const sourceUpdates = new Map<string, { partial: boolean }>();
 
       for (const result of prepared) {
         if (!result.preview || result.preview.mode !== "live") continue;
-        sourceUpdates.set(result.source.id, result.additions.filter(itemIsNew).length);
+        sourceUpdates.set(result.source.id, {
+          partial: result.preview.warning?.code === "RSSHUB_PARTIAL",
+        });
         items = [...result.additions, ...items];
       }
 
       return {
         ...current,
         items,
-        sources: current.sources.map((source) =>
-          sourceUpdates.has(source.id)
+        sources: current.sources.map((source) => {
+          if (mismatchedSourceIds.has(source.id)) {
+            return {
+              ...source,
+              lastSyncLabel: "来源异常",
+              unreadCount: items.filter(
+                (item) => item.sourceId === source.id && itemIsNew(item),
+              ).length,
+              knownItemIds: [],
+            };
+          }
+          return sourceUpdates.has(source.id)
             ? {
                 ...source,
-                lastSyncLabel: "刚刚",
+                lastSyncLabel: sourceUpdates.get(source.id)?.partial ? "部分更新" : "刚刚",
+                identityVerified:
+                  prepared.find((result) => result.source.id === source.id)?.preview?.source
+                    .identityVerified === true || source.identityVerified,
                 unreadCount: items.filter(
                   (item) => item.sourceId === source.id && itemIsNew(item),
                 ).length,
@@ -1230,16 +1368,32 @@ export function OurChoiceApp() {
                   ]),
                 ).slice(0, 500),
               }
-            : source,
-        ),
+            : source;
+        }),
       };
     });
 
     const failed = results.filter((result) => result.error).length;
+    const mismatched = mismatchedSourceIds.size;
+    const partial = results.filter(
+      (result) => result.preview?.warning?.code === "RSSHUB_PARTIAL",
+    ).length;
     setSyncing(false);
-    if (failed) {
+    if (mismatched) {
+      showToast({
+        message: `${mismatched} 个 B站来源未通过 UP 主身份校验；已移除未收藏的可疑内容`,
+        actionLabel: "重试",
+        onAction: () => void refreshSources(sourceIds),
+      });
+    } else if (failed) {
       showToast({
         message: `${failed} 个来源更新失败，已保留上次成功获取的内容`,
+        actionLabel: "重试",
+        onAction: () => void refreshSources(sourceIds),
+      });
+    } else if (partial) {
+      showToast({
+        message: `${partial} 个来源只完成部分更新；已保留成功获取的内容`,
         actionLabel: "重试",
         onAction: () => void refreshSources(sourceIds),
       });
@@ -1530,6 +1684,7 @@ export function OurChoiceApp() {
               rsshubSelection: preview.source.rsshubSelection,
               rsshubSelections: preview.source.rsshubSelections,
               manualSubscription: preview.source.manualSubscription,
+              identityVerified: preview.source.identityVerified,
               bilibiliOpenMode: preview.source.kind === "bilibili" ? "embedded" : undefined,
               initials: name.slice(0, 1),
               tone: TONES[(data.sources.length + preparedSources.length) % TONES.length],
@@ -1934,6 +2089,7 @@ export function OurChoiceApp() {
             ) : (
               <SubscriptionsView
                 sources={activeSources}
+                selectedSourceIds={selectedSourceIds}
                 totalUnread={unreadCount}
                 syncing={syncing}
                 onAdd={() => setAddOpen(true)}
@@ -1941,6 +2097,8 @@ export function OurChoiceApp() {
                 onRefresh={() => void refreshSources()}
                 onRefreshSource={(id) => void refreshSources([id])}
                 onToggleSource={toggleSource}
+                onSelectionChange={setSelectedSourceIds}
+                onRemoveSelected={requestRemoveSelectedSources}
                 onRemoveSource={requestRemoveSource}
                 onOpenDetails={openSourceDetails}
                 onOpenSource={openSource}
@@ -2034,6 +2192,7 @@ export function OurChoiceApp() {
               provider: preview.source.provider,
               rsshubSelection: preview.source.rsshubSelection,
               rsshubSelections: preview.source.rsshubSelections,
+              identityVerified: preview.source.identityVerified,
               bilibiliOpenMode:
                 preview.source.kind === "bilibili" ? "embedded" : undefined,
               manualSubscription: preview.source.manualSubscription,
@@ -2662,7 +2821,12 @@ function ContentCard({
           <SourceAvatar source={source} size="small" />
           <span>{source?.name ?? "已保存来源"}</span>
           <span className="source-separator">·</span>
-          <time dateTime={item.publishedAt}>{item.publishedLabel}</time>
+          <time
+            dateTime={item.publishedAtReliable === false ? item.discoveredAt : item.publishedAt}
+            title={item.publishedAtReliable === false ? "原始来源未提供发布时间；这里显示发现时间" : undefined}
+          >
+            {item.publishedLabel}
+          </time>
           {itemIsNew(item) ? (
             <span className="unread-label">新增</span>
           ) : !item.read ? (
@@ -2849,6 +3013,7 @@ function SourceDetailView({
 
 function SubscriptionsView({
   sources,
+  selectedSourceIds,
   totalUnread,
   syncing,
   onAdd,
@@ -2856,12 +3021,15 @@ function SubscriptionsView({
   onRefresh,
   onRefreshSource,
   onToggleSource,
+  onSelectionChange,
+  onRemoveSelected,
   onRemoveSource,
   onOpenDetails,
   onOpenSource,
   onSettings,
 }: {
   sources: Source[];
+  selectedSourceIds: string[];
   totalUnread: number;
   syncing: boolean;
   onAdd: () => void;
@@ -2869,6 +3037,8 @@ function SubscriptionsView({
   onRefresh: () => void;
   onRefreshSource: (id: string) => void;
   onToggleSource: (id: string) => void;
+  onSelectionChange: (ids: string[]) => void;
+  onRemoveSelected: () => void;
   onRemoveSource: (source: Source) => void;
   onOpenDetails: (source: Source) => void;
   onOpenSource: (source: Source) => void;
@@ -2878,6 +3048,24 @@ function SubscriptionsView({
   const rssCount = sources.filter(
     (source) => source.feedUrl || source.refreshUrl || source.manualSubscription,
   ).length;
+  const selectedIds = new Set(selectedSourceIds);
+  const selectedCount = sources.filter((source) => selectedIds.has(source.id)).length;
+  const allSelected = sources.length > 0 && selectedCount === sources.length;
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = selectedCount > 0 && !allSelected;
+    }
+  }, [allSelected, selectedCount]);
+
+  function toggleSourceSelection(sourceId: string, checked: boolean) {
+    onSelectionChange(
+      checked
+        ? Array.from(new Set([...selectedSourceIds, sourceId]))
+        : selectedSourceIds.filter((id) => id !== sourceId),
+    );
+  }
 
   return (
     <>
@@ -2922,6 +3110,31 @@ function SubscriptionsView({
             </div>
           </section>
 
+          <section className="subscription-bulk-bar" aria-label="批量管理来源">
+            <label className="source-select-all">
+              <input
+                ref={selectAllRef}
+                type="checkbox"
+                checked={allSelected}
+                onChange={(event) =>
+                  onSelectionChange(event.target.checked ? sources.map((source) => source.id) : [])
+                }
+              />
+              <span>{allSelected ? "取消全选" : "全选来源"}</span>
+            </label>
+            <span className="selection-count" aria-live="polite">
+              {selectedCount ? `已选择 ${selectedCount} 个来源` : "选择来源后可批量删除"}
+            </span>
+            <button
+              className="danger-button"
+              type="button"
+              disabled={selectedCount === 0}
+              onClick={onRemoveSelected}
+            >
+              <Trash2 size={16} /> 删除所选{selectedCount ? `（${selectedCount}）` : ""}
+            </button>
+          </section>
+
           <section className="source-list" aria-label="订阅来源列表">
             <div className="list-header" aria-hidden="true">
               <span>来源</span>
@@ -2930,8 +3143,21 @@ function SubscriptionsView({
               <span>操作</span>
             </div>
             {sources.map((source) => (
-              <article className={`source-row ${!source.enabled ? "is-paused" : ""}`} key={source.id}>
+              <article
+                className={`source-row ${!source.enabled ? "is-paused" : ""} ${selectedIds.has(source.id) ? "is-selected" : ""}`}
+                key={source.id}
+              >
                 <div className="source-main">
+                  <label className="source-selection">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(source.id)}
+                      aria-label={`选择 ${source.name}`}
+                      onChange={(event) =>
+                        toggleSourceSelection(source.id, event.target.checked)
+                      }
+                    />
+                  </label>
                   <SourceAvatar source={source} />
                   <div>
                     <button

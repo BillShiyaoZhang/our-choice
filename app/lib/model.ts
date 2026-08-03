@@ -56,6 +56,8 @@ export interface Source {
   rsshubSelections?: RssHubSelection[];
   /** How videos from a Bilibili source open. Missing legacy values mean embedded. */
   bilibiliOpenMode?: "embedded" | "external";
+  /** The last RSSHub feed was matched back to this Bilibili profile's MID. */
+  identityVerified?: boolean;
   /** Non-secret identifiers for an allowlisted manual RSSHub route. */
   manualSubscription?: RssHubManualSubscription;
   initials: string;
@@ -87,6 +89,8 @@ export interface ContentItem {
   type: ContentType;
   url: string;
   publishedAt: string;
+  /** False when the source omitted its publication date and publishedAt is only a discovery fallback. */
+  publishedAtReliable?: boolean;
   publishedLabel: string;
   dateGroup: "今天" | "昨天" | "更早";
   duration: string;

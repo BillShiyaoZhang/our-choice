@@ -92,6 +92,14 @@ test("keeps channels and content inside the app with a new-content baseline", as
   assert.doesNotMatch(app, /target="_blank"/);
   assert.match(model, /platformSessions:\s*PlatformSession\[\]/);
   assert.match(model, /viewedAt\?:\s*string/);
+  assert.match(model, /publishedAtReliable\?:\s*boolean/);
+  assert.match(app, /looksLikeLegacyDiscoveryFallback/);
+  assert.match(app, /relativeTimeLabel\(discoveredAt\).*发现/s);
+  assert.match(app, /原始来源未提供发布时间；这里显示发现时间/);
+  assert.match(app, /RSSHUB_PARTIAL/);
+  assert.match(app, /只完成部分更新/);
+  assert.match(app, /reverifiedSourceIds/);
+  assert.match(app, /未通过 UP 主身份校验/);
   assert.match(previewRoute, /publishedAtReliable:\s*Boolean\(publishedAt\)/);
 });
 
@@ -259,8 +267,10 @@ test("configured RSSHub resolves Radar rules without exposing its instance or ac
     assert.equal(payload.source.provider, "rsshub");
     assert.equal(payload.source.refreshUrl, sourceUrl);
     assert.equal(payload.source.rsshubRoute, "/bilibili/user/video/946974");
+    assert.equal(payload.source.identityVerified, true);
     assert.equal(payload.source.feedUrl, undefined);
     assert.equal(payload.items[0].title, "一条新视频");
+    assert.equal(payload.items[0].publishedAtReliable, true);
     assert.equal(requestedUrls.length, 2);
     assert.ok(requestedUrls.every((url) => new URL(url).searchParams.get("key") === accessKey));
     assert.doesNotMatch(JSON.stringify(payload), /rsshub\.internal|server-only-secret/);
@@ -270,6 +280,56 @@ test("configured RSSHub resolves Radar rules without exposing its instance or ac
     else process.env.RSSHUB_BASE_URL = previousBaseUrl;
     if (previousAccessKey === undefined) delete process.env.RSSHUB_ACCESS_KEY;
     else process.env.RSSHUB_ACCESS_KEY = previousAccessKey;
+  }
+});
+
+test("rejects Bilibili feed content when RSSHub returns a different creator", async () => {
+  const previousBaseUrl = process.env.RSSHUB_BASE_URL;
+  const originalFetch = globalThis.fetch;
+  const sourceUrl = "https://space.bilibili.com/946974";
+  process.env.RSSHUB_BASE_URL = "https://rsshub.example";
+
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === "https://rsshub.example/api/radar/rules/bilibili.com") {
+      return Response.json({
+        space: [
+          { title: "UP 主投稿", source: ["/:uid"], target: "/bilibili/user/video/:uid" },
+        ],
+      });
+    }
+    if (url === "https://rsshub.example/bilibili/user/video/946974") {
+      return new Response(
+        `<?xml version="1.0"?><rss version="2.0"><channel><title>错误的 UP 主</title><link>https://space.bilibili.com/672328094</link><item><title>不属于该来源的视频</title><link>https://www.bilibili.com/video/BV1wrong</link></item></channel></rss>`,
+        { headers: { "content-type": "application/rss+xml" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  };
+
+  try {
+    const app = await worker();
+    const response = await app.fetch(
+      new Request("http://localhost/api/source-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      }),
+      env(),
+      context,
+    );
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.mode, "link-only");
+    assert.equal(payload.warning.code, "RSSHUB_SOURCE_MISMATCH");
+    assert.match(payload.warning.message, /不属于这个 B站 UP 主/);
+    assert.deepEqual(payload.items, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousBaseUrl === undefined) delete process.env.RSSHUB_BASE_URL;
+    else process.env.RSSHUB_BASE_URL = previousBaseUrl;
   }
 });
 
@@ -449,6 +509,7 @@ test("multiple selected RSSHub candidates merge into one source and deduplicate 
         "https://www.bilibili.com/video/BV1one",
       ],
     );
+    assert.ok(payload.items.every((item) => item.publishedAtReliable === false));
     assert.equal(
       requestedUrls.filter((url) => url.endsWith("/api/radar/rules/bilibili.com")).length,
       1,
