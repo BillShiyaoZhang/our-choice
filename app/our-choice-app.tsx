@@ -70,6 +70,7 @@ const STORAGE_KEY = "our-choice:state:v1";
 const ASSISTANT_STORAGE_KEY = "our-choice:assistant:v1";
 const ASSISTANT_HANDOFF_HASH = "#browser-assistant";
 const CLIP_SOURCE_ID = "source-browser-clips";
+const ASSISTANT_IMPORT_CONCURRENCY = 6;
 const TONES: VisualTone[] = ["forest", "clay", "ocean", "sun", "plum", "ink"];
 
 type TypeFilter = "all" | ContentType;
@@ -134,11 +135,13 @@ async function fetchPreview(
   limit = 12,
   selections?: string[],
   manual?: RssHubManualSubscription,
+  signal?: AbortSignal,
 ) {
   const response = await fetch("/api/source-preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url: url || undefined, limit, selections, manual }),
+    signal,
   });
   const result = (await response.json()) as PreviewResponse;
   if (!result.ok) throw new Error(result.error.message);
@@ -217,6 +220,32 @@ interface AssistantImportSelection {
   bilibiliSourceKinds: BilibiliBatchSourceKind[];
 }
 
+type AssistantImportTaskStatus =
+  | "running"
+  | "paused"
+  | "cancelling"
+  | "cancelled"
+  | "completed";
+
+interface AssistantImportTaskState {
+  id: string;
+  status: AssistantImportTaskStatus;
+  total: number;
+  completed: number;
+  imported: number;
+  duplicates: number;
+  failed: number;
+  visible: boolean;
+}
+
+interface AssistantImportController {
+  id: string;
+  paused: boolean;
+  cancelled: boolean;
+  abortControllers: Set<AbortController>;
+  resumeWaiters: Set<() => void>;
+}
+
 type BilibiliBatchSourceKind =
   | "article"
   | "coin"
@@ -260,6 +289,54 @@ function isBilibiliProfileCandidate(candidate: AssistantSourceCandidate) {
     return url.hostname === "space.bilibili.com" && /^\/\d+(?:\/|$)/.test(url.pathname);
   } catch {
     return false;
+  }
+}
+
+function bilibiliCandidateMid(candidate: AssistantSourceCandidate) {
+  if (/^\d+$/.test(candidate.externalId ?? "")) return candidate.externalId!;
+  try {
+    const url = new URL(candidate.url);
+    return url.hostname === "space.bilibili.com"
+      ? url.pathname.match(/^\/(\d+)(?:\/|$)/)?.[1]
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function bilibiliSelectionIds(
+  candidate: AssistantSourceCandidate,
+  kinds: BilibiliBatchSourceKind[],
+) {
+  const mid = bilibiliCandidateMid(candidate);
+  if (!mid) return undefined;
+  return kinds.map((kind) => {
+    const cookieUid = kind === "followers" || kind === "followings" ? "/1" : "";
+    return `radar:/bilibili/user/${kind}/${mid}${cookieUid}`;
+  });
+}
+
+function waitForAssistantImportResume(controller: AssistantImportController) {
+  if (controller.cancelled) return Promise.reject(new DOMException("导入已取消", "AbortError"));
+  if (!controller.paused) return Promise.resolve();
+  return new Promise<void>((resolve) => controller.resumeWaiters.add(resolve)).then(() => {
+    if (controller.cancelled) throw new DOMException("导入已取消", "AbortError");
+  });
+}
+
+async function fetchAssistantPreview(
+  controller: AssistantImportController,
+  url: string,
+  selections?: string[],
+) {
+  if (controller.cancelled) throw new DOMException("导入已取消", "AbortError");
+  const requestController = new AbortController();
+  controller.abortControllers.add(requestController);
+  try {
+    const directSelections = selections;
+    return await fetchPreview(url, 3, directSelections, undefined, requestController.signal);
+  } finally {
+    controller.abortControllers.delete(requestController);
   }
 }
 
@@ -609,12 +686,14 @@ export function OurChoiceApp() {
   const [assistantQueueOrigin, setAssistantQueueOrigin] = useState<"extension" | "file">("extension");
   const [assistantPairingCode, setAssistantPairingCode] = useState("");
   const [assistantChecking, setAssistantChecking] = useState(false);
-  const [assistantImporting, setAssistantImporting] = useState(false);
+  const [assistantImportTask, setAssistantImportTask] =
+    useState<AssistantImportTaskState | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const assistantImportRef = useRef<HTMLInputElement>(null);
   const assistantQueueRef = useRef<AssistantQueueItem[]>([]);
   const assistantQueueOriginRef = useRef<"extension" | "file">("extension");
+  const assistantImportControllerRef = useRef<AssistantImportController | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const assistantCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -708,8 +787,11 @@ export function OurChoiceApp() {
       assistantQueueOriginRef.current = "extension";
       setAssistantQueue(items);
       setAssistantQueueOrigin("extension");
-      if (items.length) setAssistantOpen(true);
-      else if (handoffRequested) showToast({ message: "浏览器助手没有待处理内容，请返回扩展重试。" });
+      if (items.length) {
+        if (!assistantImportControllerRef.current) setAssistantOpen(true);
+      } else if (handoffRequested) {
+        showToast({ message: "浏览器助手没有待处理内容，请返回扩展重试。" });
+      }
     }
 
     window.addEventListener("message", handleAssistantMessage);
@@ -1634,6 +1716,10 @@ export function OurChoiceApp() {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    if (assistantImportControllerRef.current) {
+      showToast({ message: "请等待当前导入结束或先取消它" });
+      return;
+    }
     try {
       const parsed = JSON.parse(await file.text()) as { version?: unknown; items?: unknown };
       const items = normalizeAssistantQueue(parsed.items);
@@ -1650,12 +1736,20 @@ export function OurChoiceApp() {
   }
 
   async function processAssistantImport(selection: AssistantImportSelection) {
-    if (assistantImporting) return;
-    setAssistantImporting(true);
+    if (assistantImportControllerRef.current) {
+      showToast({ message: "已有一项导入任务正在进行" });
+      return;
+    }
+    setAssistantOpen(false);
     const selectedClipIds = new Set(selection.clipIds);
     const selectedSourceKeys = new Set(selection.sourceKeys);
     const allQueueIds = assistantQueue.map((item) => item.id);
     const failedQueueIds = new Set<string>();
+    const completedRequestKeys = new Set<string>();
+    const selectedClips = assistantQueue.filter(
+      (item): item is Extract<AssistantQueueItem, { kind: "clip" }> =>
+        item.kind === "clip" && selectedClipIds.has(item.id),
+    );
 
     const sourceRequests: Array<{
       queueId: string;
@@ -1702,17 +1796,91 @@ export function OurChoiceApp() {
           .map((request) => [comparableSourceUrl(request.candidate.url), request]),
       ).values(),
     );
-    const preparedSources: Source[] = [];
+    const taskId = createId("assistant-import");
+    const controller: AssistantImportController = {
+      id: taskId,
+      paused: false,
+      cancelled: false,
+      abortControllers: new Set(),
+      resumeWaiters: new Set(),
+    };
+    assistantImportControllerRef.current = controller;
+
+    let duplicateCount = sourceRequests.length - uniqueRequests.length;
+    let completedCount = duplicateCount;
+    let importedCount = 0;
+    let failedItemCount = 0;
+    let savedClips = 0;
+    const ownedCollectionIds = new Set(
+      data.collections.filter((collection) => collection.owned).map((collection) => collection.id),
+    );
+    const seenClipUrls = new Set(data.items.map((item) => comparableSourceUrl(item.url)));
+    for (const queued of selectedClips) {
+      completedCount += 1;
+      if (!ownedCollectionIds.has(selection.destinations[queued.id])) {
+        failedQueueIds.add(queued.id);
+        failedItemCount += 1;
+        continue;
+      }
+      importedCount += 1;
+      const key = comparableSourceUrl(queued.page.url);
+      if (seenClipUrls.has(key)) duplicateCount += 1;
+      else {
+        seenClipUrls.add(key);
+        savedClips += 1;
+      }
+    }
+
+    const totalCount = sourceRequests.length + selectedClips.length;
+    const publishProgress = () => {
+      setAssistantImportTask((current) =>
+        current?.id === taskId
+          ? {
+              ...current,
+              completed: completedCount,
+              imported: importedCount,
+              duplicates: duplicateCount,
+              failed: failedItemCount,
+            }
+          : current,
+      );
+    };
+    setAssistantImportTask({
+      id: taskId,
+      status: "running",
+      total: totalCount,
+      completed: completedCount,
+      imported: importedCount,
+      duplicates: duplicateCount,
+      failed: failedItemCount,
+      visible: true,
+    });
+
+    const preparedSources = new Array<Source | undefined>(uniqueRequests.length);
     let requestIndex = 0;
-    const workerCount = Math.min(3, uniqueRequests.length);
+    const workerCount = Math.min(ASSISTANT_IMPORT_CONCURRENCY, uniqueRequests.length);
 
     await Promise.all(
       Array.from({ length: workerCount }, async () => {
-        while (requestIndex < uniqueRequests.length) {
-          const request = uniqueRequests[requestIndex];
-          requestIndex += 1;
+        while (!controller.cancelled) {
           try {
-            let preview = await fetchPreview(request.candidate.url, 3);
+            await waitForAssistantImportResume(controller);
+          } catch {
+            break;
+          }
+          const index = requestIndex;
+          if (index >= uniqueRequests.length) break;
+          requestIndex += 1;
+          const request = uniqueRequests[index]!;
+          try {
+            const directSelections = request.isBilibiliProfile
+              ? bilibiliSelectionIds(request.candidate, selection.bilibiliSourceKinds)
+              : undefined;
+            let preview = await fetchAssistantPreview(
+              controller,
+              request.candidate.url,
+              directSelections,
+            );
             if (preview.mode === "select") {
               const preferred = request.isBilibiliProfile
                 ? preview.options?.filter((option) => {
@@ -1734,9 +1902,9 @@ export function OurChoiceApp() {
                     : "没有可用的订阅范围",
                 );
               }
-              preview = await fetchPreview(
+              preview = await fetchAssistantPreview(
+                controller,
                 request.candidate.url,
-                3,
                 preferred.map((option) => option.id),
               );
             }
@@ -1767,7 +1935,7 @@ export function OurChoiceApp() {
               identityVerified: preview.source.identityVerified,
               bilibiliOpenMode: preview.source.kind === "bilibili" ? "embedded" : undefined,
               initials: name.slice(0, 1),
-              tone: TONES[(data.sources.length + preparedSources.length) % TONES.length],
+              tone: TONES[(data.sources.length + index) % TONES.length],
               enabled: true,
               lastSyncLabel: preview.mode === "live" ? "刚刚" : "链接模式",
               unreadCount: 0,
@@ -1784,44 +1952,37 @@ export function OurChoiceApp() {
                     discoveredAt: baselineAt,
                   }).map((item) => item.id)
                 : [];
-            preparedSources.push(source);
-          } catch {
+            preparedSources[index] = source;
+            completedRequestKeys.add(request.key);
+            completedCount += 1;
+            importedCount += 1;
+            publishProgress();
+          } catch (error) {
             failedQueueIds.add(request.queueId);
+            if (controller.cancelled || (error instanceof DOMException && error.name === "AbortError")) {
+              break;
+            }
+            completedRequestKeys.add(request.key);
+            completedCount += 1;
+            failedItemCount += 1;
+            publishProgress();
           }
         }
       }),
     );
 
-    const selectedClips = assistantQueue.filter(
-      (item): item is Extract<AssistantQueueItem, { kind: "clip" }> =>
-        item.kind === "clip" && selectedClipIds.has(item.id),
-    );
-    const ownedCollectionIds = new Set(
-      data.collections.filter((collection) => collection.owned).map((collection) => collection.id),
-    );
-    for (const queued of selectedClips) {
-      if (!ownedCollectionIds.has(selection.destinations[queued.id])) {
-        failedQueueIds.add(queued.id);
-      }
-    }
-
-    let duplicateCount = sourceRequests.length - uniqueRequests.length;
-    const seenClipUrls = new Set(data.items.map((item) => comparableSourceUrl(item.url)));
-    let savedClips = 0;
-    for (const queued of selectedClips) {
-      if (failedQueueIds.has(queued.id)) continue;
-      const key = comparableSourceUrl(queued.page.url);
-      if (seenClipUrls.has(key)) duplicateCount += 1;
-      else {
-        seenClipUrls.add(key);
-        savedClips += 1;
+    if (controller.cancelled) {
+      for (const request of uniqueRequests) {
+        if (!completedRequestKeys.has(request.key)) failedQueueIds.add(request.queueId);
       }
     }
     const preparedSourceUrls = new Set(existingSourceUrls);
-    const sourcesToSave = preparedSources.filter((source) => {
+    const successfulSources = preparedSources.filter((source): source is Source => Boolean(source));
+    const sourcesToSave = successfulSources.filter((source) => {
       const key = comparableSourceUrl(source.url);
       if (preparedSourceUrls.has(key)) {
         duplicateCount += 1;
+        importedCount -= 1;
         return false;
       }
       preparedSourceUrls.add(key);
@@ -1925,11 +2086,61 @@ export function OurChoiceApp() {
       return next;
     });
     if (acknowledgedIds.length === allQueueIds.length) setAssistantQueueOrigin("extension");
-    setAssistantImporting(false);
-    if (!failedQueueIds.size) setAssistantOpen(false);
+    if (assistantImportControllerRef.current?.id === taskId) {
+      assistantImportControllerRef.current = null;
+    }
+    setAssistantImportTask((current) =>
+      current?.id === taskId
+        ? {
+            ...current,
+            status: controller.cancelled ? "cancelled" : "completed",
+            completed: completedCount,
+            imported: importedCount,
+            duplicates: duplicateCount,
+            failed: failedItemCount,
+          }
+        : current,
+    );
     if (savedSources) setView("subscriptions");
     showToast({
-      message: `已收藏 ${savedClips} 条、订阅 ${savedSources} 个；跳过 ${duplicateCount} 个重复项${failedQueueIds.size ? `，${failedQueueIds.size} 组待重试` : ""}`,
+      message: `${controller.cancelled ? "导入已取消；" : ""}已收藏 ${savedClips} 条、订阅 ${savedSources} 个；跳过 ${duplicateCount} 个重复项${failedQueueIds.size ? `，${failedQueueIds.size} 组待重试` : ""}`,
+    });
+  }
+
+  function toggleAssistantImportPause() {
+    const controller = assistantImportControllerRef.current;
+    if (!controller || controller.cancelled) return;
+    controller.paused = !controller.paused;
+    if (!controller.paused) {
+      for (const resume of controller.resumeWaiters) resume();
+      controller.resumeWaiters.clear();
+    }
+    setAssistantImportTask((current) =>
+      current?.id === controller.id
+        ? { ...current, status: controller.paused ? "paused" : "running" }
+        : current,
+    );
+  }
+
+  function cancelAssistantImport() {
+    const controller = assistantImportControllerRef.current;
+    if (!controller || controller.cancelled) return;
+    controller.cancelled = true;
+    controller.paused = false;
+    for (const resume of controller.resumeWaiters) resume();
+    controller.resumeWaiters.clear();
+    for (const requestController of controller.abortControllers) requestController.abort();
+    setAssistantImportTask((current) =>
+      current?.id === controller.id ? { ...current, status: "cancelling" } : current,
+    );
+  }
+
+  function dismissAssistantImportProgress() {
+    setAssistantImportTask((current) => {
+      if (!current) return null;
+      return ["completed", "cancelled"].includes(current.status)
+        ? null
+        : { ...current, visible: false };
     });
   }
 
@@ -2457,9 +2668,24 @@ export function OurChoiceApp() {
         <BrowserAssistantModal
           queue={assistantQueue}
           data={data}
-          importing={assistantImporting}
+          importing={Boolean(assistantImportControllerRef.current)}
           onClose={() => setAssistantOpen(false)}
-          onConfirm={(selection) => void processAssistantImport(selection)}
+          onConfirm={(selection) => {
+            setAssistantOpen(false);
+            void processAssistantImport(selection);
+          }}
+        />
+      )}
+
+      {assistantImportTask && (
+        <AssistantImportProgress
+          task={assistantImportTask}
+          onExpand={() =>
+            setAssistantImportTask((current) => current ? { ...current, visible: true } : current)
+          }
+          onDismiss={dismissAssistantImportProgress}
+          onTogglePause={toggleAssistantImportPause}
+          onCancel={cancelAssistantImport}
         />
       )}
 
@@ -4714,6 +4940,103 @@ function SuggestionModal({
         </button>
       </div>
     </Modal>
+  );
+}
+
+function AssistantImportProgress({
+  task,
+  onExpand,
+  onDismiss,
+  onTogglePause,
+  onCancel,
+}: {
+  task: AssistantImportTaskState;
+  onExpand: () => void;
+  onDismiss: () => void;
+  onTogglePause: () => void;
+  onCancel: () => void;
+}) {
+  const percentage = task.total
+    ? Math.min(100, Math.round((task.completed / task.total) * 100))
+    : 100;
+  const active = ["running", "paused", "cancelling"].includes(task.status);
+  const title = task.status === "paused"
+    ? "导入已暂停"
+    : task.status === "cancelling"
+      ? "正在取消导入"
+      : task.status === "cancelled"
+        ? "导入已取消"
+        : task.status === "completed"
+          ? "导入完成"
+          : "正在后台导入";
+
+  if (!task.visible && !active) return null;
+
+  if (!task.visible) {
+    return (
+      <button
+        className="assistant-import-progress-collapsed"
+        type="button"
+        aria-label={`展开导入进度，当前 ${percentage}%`}
+        onClick={onExpand}
+      >
+        {task.status === "running" ? <RefreshCw className="is-spinning" size={15} /> : <Pause size={15} />}
+        <span>导入 {percentage}%</span>
+      </button>
+    );
+  }
+
+  return (
+    <aside className="assistant-import-progress" aria-live="polite" aria-atomic="true">
+      <div className="assistant-import-progress-heading">
+        <span className={`assistant-import-progress-icon status-${task.status}`} aria-hidden="true">
+          {task.status === "completed" ? <Check size={16} /> : task.status === "cancelled" ? <X size={16} /> : <RefreshCw className={task.status === "running" ? "is-spinning" : ""} size={16} />}
+        </span>
+        <div>
+          <strong>{title}</strong>
+          <span>已导入 {task.completed} / 全部 {task.total}</span>
+        </div>
+        <button type="button" aria-label="收起导入进度" onClick={onDismiss}>
+          <X size={15} />
+        </button>
+      </div>
+      <div
+        className="assistant-import-progress-track"
+        role="progressbar"
+        aria-label="批量导入进度"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percentage}
+      >
+        <span className="assistant-import-progress-bar" style={{ width: `${percentage}%` }} />
+      </div>
+      <div className="assistant-import-progress-summary">
+        <strong>{percentage}%</strong>
+        <span>成功 {task.imported}</span>
+        <span>重复 {task.duplicates}</span>
+        <span>失败 {task.failed}</span>
+      </div>
+      {active && (
+        <div className="assistant-import-progress-actions">
+          <button
+            type="button"
+            disabled={task.status === "cancelling"}
+            onClick={onTogglePause}
+          >
+            {task.status === "paused" ? <Play size={14} /> : <Pause size={14} />}
+            {task.status === "paused" ? "继续导入" : "暂停导入"}
+          </button>
+          <button
+            className="danger-text-button"
+            type="button"
+            disabled={task.status === "cancelling"}
+            onClick={onCancel}
+          >
+            <X size={14} /> 取消导入
+          </button>
+        </div>
+      )}
+    </aside>
   );
 }
 
