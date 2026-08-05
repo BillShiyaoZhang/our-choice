@@ -9,11 +9,17 @@
   function normalizeHttpUrl(value) {
     if (typeof value !== "string") return null;
     try {
-      const url = new URL(value.trim());
-      if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+      const candidate = value.trim();
+      if (!candidate || candidate.length > 4_096) return null;
+      const url = new URL(candidate);
+      if (
+        (url.protocol !== "http:" && url.protocol !== "https:") ||
+        url.username ||
+        url.password
+      ) return null;
       url.hash = "";
       if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
-      return url.href;
+      return url.href.length <= 4_096 ? url.href : null;
     } catch {
       return null;
     }
@@ -92,7 +98,16 @@
     return result;
   }
 
+  function browserApi(runtimeRoot) {
+    const api = runtimeRoot?.OurChoiceBrowser
+      ?? Reflect.get(runtimeRoot, "browser")
+      ?? Reflect.get(runtimeRoot, "chrome");
+    if (!api) throw new Error("This browser does not expose the WebExtensions API.");
+    return api;
+  }
+
   const api = {
+    browserApi,
     cleanText,
     normalizeHttpUrl,
     canonicalBilibiliProfile,

@@ -4,6 +4,7 @@
   globalThis.__ourChoicePageInspectorInstalled = true;
 
   const helpers = globalThis.OurChoiceExtension;
+  const extensionApi = helpers.browserApi(globalThis);
   const MAX_AUTO_SCAN_PAGES = 200;
   const AUTO_SCAN_PAGE_TIMEOUT_MS = 15_000;
   const AUTO_SCAN_OVERLAY_ID = "our-choice-auto-scan";
@@ -235,7 +236,7 @@
     cancel.style.cssText = "border:1px solid #d6d5ce;border-radius:8px;padding:7px 10px;background:#fff;color:#26342e;cursor:pointer";
     cancel.addEventListener("click", () => {
       autoScanCancelled = true;
-      void chrome.runtime.sendMessage({ type: "OUR_CHOICE_CANCEL_AUTO_FOLLOW_SCAN" });
+      void extensionApi.runtime.sendMessage({ type: "OUR_CHOICE_CANCEL_AUTO_FOLLOW_SCAN" });
       updateOverlay("正在取消；已扫描结果会保留。", true);
     });
     host.append(title, detail, cancel);
@@ -254,7 +255,7 @@
   async function stopAutoScan(error) {
     const message = error instanceof Error ? error.message : "自动扫描失败。";
     autoScanRunning = false;
-    await chrome.runtime.sendMessage({
+    await extensionApi.runtime.sendMessage({
       type: "OUR_CHOICE_REPORT_AUTO_FOLLOW_SCAN",
       running: false,
       error: message,
@@ -284,7 +285,7 @@
         const candidates = await waitForCandidates();
         const signature = pageSignature(candidates);
         const info = pageInfo();
-        const recorded = await chrome.runtime.sendMessage({
+        const recorded = await extensionApi.runtime.sendMessage({
           type: "OUR_CHOICE_RECORD_AUTO_FOLLOW_PAGE",
           page: info.current,
           totalPages: info.total,
@@ -295,10 +296,15 @@
         if (recorded.duplicatePage) throw new Error("检测到重复页面，已停止以避免循环翻页。");
         updateOverlay(`已扫描 ${recorded.auto.pagesScanned}${recorded.auto.totalPages ? ` / ${recorded.auto.totalPages}` : ""} 页，累计 ${recorded.count} 个账号。`);
         if (!info.next) {
-          const finished = await chrome.runtime.sendMessage({ type: "OUR_CHOICE_FINISH_FOLLOW_SCAN" });
+          const finished = await extensionApi.runtime.sendMessage({ type: "OUR_CHOICE_FINISH_FOLLOW_SCAN" });
           if (!finished?.ok) throw new Error(finished?.error || "扫描完成，但发送到自选失败。");
           autoScanRunning = false;
-          updateOverlay(`扫描完成：共 ${finished.count} 个账号，正在打开自选确认页。`, true);
+          updateOverlay(
+            finished.delivery === "desktop"
+              ? `扫描完成：共 ${finished.count} 个账号，已发送到 Mac 应用。`
+              : `扫描完成：共 ${finished.count} 个账号，正在打开自选确认页。`,
+            true,
+          );
           return finished;
         }
         info.next.click();
@@ -345,7 +351,7 @@
     };
   }
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  extensionApi.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "OUR_CHOICE_INSPECT_PAGE") {
       sendResponse(inspectPage());
       return false;

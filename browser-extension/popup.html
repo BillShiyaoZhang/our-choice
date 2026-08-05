@@ -15,10 +15,10 @@
       </header>
 
       <section id="settings" class="settings" hidden>
-        <label>本地应用地址<input id="app-url" type="url" value="http://localhost:3000" /></label>
-        <label>配对码<input id="pairing-code" type="password" autocomplete="off" placeholder="从自选设置中复制" /></label>
+        <label>本地应用地址（自动发现）<input id="app-url" type="url" value="http://localhost:3000" /></label>
+        <label>Docker / 网页模式配对码<input id="pairing-code" type="password" autocomplete="off" placeholder="安装版 Mac 应用无需填写" /></label>
         <button id="save-settings" class="secondary" type="button">保存连接</button>
-        <p>配对码只保存在这个扩展中。</p>
+        <p>Mac 应用会自动连接；这里只为自动范围外的开发端口，以及 Docker / 网页模式保留手工配置。</p>
       </section>
 
       <section id="page-card" class="page-card" aria-live="polite">
@@ -50,6 +50,7 @@
         <button id="export-queue" type="button">导出待处理 JSON</button>
       </footer>
     </main>
+    <script src="extension-api.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

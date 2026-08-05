@@ -1,0 +1,70 @@
+name: Package Chrome Web Store extension
+
+on:
+  workflow_dispatch:
+    inputs:
+      extension_version:
+        description: Exact version already committed in browser-extension/manifest.json
+        required: true
+        default: "0.2.0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chrome-extension-package
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EXTENSION_VERSION: ${{ inputs.extension_version }}
+
+    steps:
+      - name: Check out dispatched commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22.23.1"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Test extension sources and release tooling
+        run: |
+          npm run lint
+          node --test \
+            tests/browser-assistant.test.mjs \
+            tests/browser-extension-package.test.mjs \
+            tests/macos-distribution.test.mjs
+
+      - name: Build Chrome Web Store upload
+        run: npm run extensions:package:chrome -- --expected-version "$EXTENSION_VERSION"
+
+      - name: Verify final ZIP and checksum
+        run: |
+          npm run extensions:verify-package:chrome -- \
+            "build/browser-extensions/Our-Choice-Chrome-${EXTENSION_VERSION}.zip" \
+            --expected-version "$EXTENSION_VERSION"
+          cd build/browser-extensions
+          sha256sum --check "Our-Choice-Chrome-${EXTENSION_VERSION}.zip.sha256"
+
+      - name: Upload verified Chrome Web Store package
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: Our-Choice-Chrome-${{ inputs.extension_version }}
+          path: |
+            build/browser-extensions/Our-Choice-Chrome-${{ inputs.extension_version }}.zip
+            build/browser-extensions/Our-Choice-Chrome-${{ inputs.extension_version }}.zip.sha256
+          if-no-files-found: error
+          compression-level: 0

@@ -28,9 +28,48 @@ test("ships a self-contained user and developer documentation site", async () =>
   assert.match(html, /Bilibili/);
   assert.match(html, /微信公众号、知乎、小红书、抖音、快手、微博、小宇宙/);
   assert.match(html, /今日头条、百家号、豆瓣和喜马拉雅/);
+  assert.match(html, /id="macos-app"/);
+  assert.match(html, /Safari Web Extension/);
+  assert.match(html, /npm run mac:package/);
+  assert.match(html, /npm run mac:package-local/);
+  assert.match(html, /Our-Choice-local-unsigned\.pkg/);
   assert.match(css, /prefers-reduced-motion/);
   assert.match(script, /data-doc-search/);
   assert.match(script, /navigator\.clipboard/);
+});
+
+test("documents the native macOS app, one-package install, and browser limits", async () => {
+  const [html, readme, spec] = await Promise.all([
+    text("docs/index.html"),
+    text("README.md"),
+    text("docs/spec/macos-local-app.md"),
+  ]);
+
+  for (const document of [html, readme, spec]) {
+    assert.match(document, /macOS|Mac/);
+    assert.match(document, /Safari/);
+    assert.match(document, /PKG/);
+    assert.match(document, /docker compose up --build/);
+  }
+  assert.match(spec, /Contents\/PlugIns/);
+  assert.match(spec, /Developer ID Application/);
+  assert.match(spec, /Developer ID Installer/);
+  assert.match(spec, /用户.*启用/);
+  for (const variable of [
+    "OUR_CHOICE_NODE_ARM64",
+    "OUR_CHOICE_NODE_X64",
+    "OUR_CHOICE_APP_SIGN_IDENTITY",
+    "OUR_CHOICE_INSTALLER_SIGN_IDENTITY",
+    "OUR_CHOICE_DEVELOPMENT_TEAM",
+    "OUR_CHOICE_NOTARY_PROFILE",
+    "OUR_CHOICE_CHROME_EXTENSION_ID",
+  ]) {
+    assert.match(spec, new RegExp(variable));
+  }
+  assert.match(readme, /--skip-notarization/);
+  assert.match(html, /未签名/);
+  assert.match(html, /首次.*启动/);
+  assert.match(html, /手动加载/);
 });
 
 test("integrates docs with development, builds, and product navigation", async () => {

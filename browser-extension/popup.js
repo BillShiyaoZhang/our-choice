@@ -1,5 +1,6 @@
 "use strict";
 
+const extensionApi = globalThis.OurChoiceBrowser;
 let inspection = null;
 let activeTabId = null;
 let followScanState = null;
@@ -14,7 +15,7 @@ const elements = Object.fromEntries(
 );
 
 function send(message) {
-  return chrome.runtime.sendMessage(message);
+  return extensionApi.runtime.sendMessage(message);
 }
 
 function status(message, error = false) {
@@ -23,14 +24,14 @@ function status(message, error = false) {
 }
 
 async function inspectCurrentPage() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await extensionApi.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("没有找到当前标签页。");
   activeTabId = tab.id;
-  await chrome.scripting.executeScript({
+  await extensionApi.scripting.executeScript({
     target: { tabId: tab.id },
-    files: ["shared.js", "content-script.js"],
+    files: ["extension-api.js", "shared.js", "content-script.js"],
   });
-  return chrome.tabs.sendMessage(tab.id, { type: "OUR_CHOICE_INSPECT_PAGE" });
+  return extensionApi.tabs.sendMessage(tab.id, { type: "OUR_CHOICE_INSPECT_PAGE" });
 }
 
 function renderInspection(result) {
@@ -56,14 +57,28 @@ async function enqueueClip(destination) {
     type: "OUR_CHOICE_ENQUEUE",
     item: { kind: "clip", page: inspection.page, destination },
   });
-  status(result.ok ? "已发送到自选，正在打开确认页面。" : result.error, !result.ok);
+  status(
+    result.ok
+      ? result.delivery === "desktop"
+        ? "已发送到 Mac 应用，请在自选中确认。"
+        : "已发送到自选，正在打开确认页面。"
+      : result.error,
+    !result.ok,
+  );
 }
 
 async function enqueueSource() {
   const candidate = inspection?.sourceCandidates?.[0];
   if (!candidate) return;
   const result = await send({ type: "OUR_CHOICE_ENQUEUE", item: { kind: "source", candidate } });
-  status(result.ok ? "来源已发送到自选，请确认订阅。" : result.error, !result.ok);
+  status(
+    result.ok
+      ? result.delivery === "desktop"
+        ? "来源已发送到 Mac 应用，请在自选中确认订阅。"
+        : "来源已发送到自选网页，请确认订阅。"
+      : result.error,
+    !result.ok,
+  );
 }
 
 async function renderScanState() {
@@ -87,7 +102,7 @@ async function renderScanState() {
 
 async function scanCurrentPage() {
   if (!activeTabId) return;
-  const scan = await chrome.tabs.sendMessage(activeTabId, { type: "OUR_CHOICE_SCAN_BILIBILI" });
+  const scan = await extensionApi.tabs.sendMessage(activeTabId, { type: "OUR_CHOICE_SCAN_BILIBILI" });
   if (!scan?.ok) return status(scan?.error || "扫描失败。", true);
   const merged = await send({ type: "OUR_CHOICE_MERGE_FOLLOW_SCAN", candidates: scan.candidates });
   status(
@@ -123,7 +138,7 @@ elements["auto-scan"].addEventListener("click", async () => {
   if (followScanState?.auto?.running) {
     await send({ type: "OUR_CHOICE_CANCEL_AUTO_FOLLOW_SCAN" });
     try {
-      await chrome.tabs.sendMessage(activeTabId, { type: "OUR_CHOICE_CANCEL_AUTO_SCAN_BILIBILI" });
+      await extensionApi.tabs.sendMessage(activeTabId, { type: "OUR_CHOICE_CANCEL_AUTO_SCAN_BILIBILI" });
     } catch {
       // The page may be between two same-origin navigations.
     }
@@ -134,7 +149,7 @@ elements["auto-scan"].addEventListener("click", async () => {
   if (!started.ok) return status(started.error, true);
   status("自动扫描已开始；可以关闭弹窗并在页面查看进度。");
   await renderScanState();
-  chrome.tabs.sendMessage(activeTabId, { type: "OUR_CHOICE_AUTO_SCAN_BILIBILI" }).catch(async (error) => {
+  extensionApi.tabs.sendMessage(activeTabId, { type: "OUR_CHOICE_AUTO_SCAN_BILIBILI" }).catch(async (error) => {
     await send({
       type: "OUR_CHOICE_REPORT_AUTO_FOLLOW_SCAN",
       tabId: activeTabId,
@@ -147,7 +162,9 @@ elements["finish-scan"].addEventListener("click", async () => {
   const result = await send({ type: "OUR_CHOICE_FINISH_FOLLOW_SCAN" });
   status(
     result.ok
-      ? `已发送 ${result.count} 个关注；请在自选网页中确认导入。`
+      ? result.delivery === "desktop"
+        ? `已发送 ${result.count} 个关注到 Mac 应用；请在自选中确认导入。`
+        : `已发送 ${result.count} 个关注；请在自选网页中确认导入。`
       : result.error,
     !result.ok,
   );
@@ -172,7 +189,8 @@ async function initialize() {
   if (saved.ok) {
     elements["app-url"].value = saved.config.appUrl;
     elements["pairing-code"].value = saved.config.pairingCode;
-    elements.settings.hidden = Boolean(saved.config.pairingCode);
+    elements.settings.hidden = Boolean(saved.config.extensionSession || saved.config.pairingCode);
+    if (saved.config.extensionSession) status("Mac 应用已自动连接。");
   }
   try {
     renderInspection(await inspectCurrentPage());

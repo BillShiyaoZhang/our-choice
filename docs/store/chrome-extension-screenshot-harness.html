@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>自选助手 Chrome Web Store 截图</title>
+    <style>
+      :root {
+        color: #20322b;
+        background: #e9e5dc;
+        font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      body {
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 11% 18%, rgba(164, 184, 168, .34), transparent 28%),
+          radial-gradient(circle at 88% 84%, rgba(193, 136, 93, .18), transparent 34%),
+          #e9e5dc;
+      }
+      .browser {
+        position: relative;
+        width: 1160px;
+        height: 704px;
+        overflow: hidden;
+        border: 1px solid rgba(39, 61, 52, .18);
+        border-radius: 20px;
+        background: #f9f8f4;
+        box-shadow: 0 34px 90px rgba(27, 48, 39, .22);
+      }
+      .browser-bar {
+        height: 54px;
+        display: grid;
+        grid-template-columns: 120px 1fr 120px;
+        align-items: center;
+        padding: 0 18px;
+        border-bottom: 1px solid #d8d7d0;
+        background: rgba(248, 247, 243, .98);
+      }
+      .traffic { display: flex; gap: 8px; }
+      .traffic i { width: 12px; height: 12px; border-radius: 50%; background: #d26a5d; }
+      .traffic i:nth-child(2) { background: #ddb356; }
+      .traffic i:nth-child(3) { background: #70a56e; }
+      .address {
+        justify-self: center;
+        width: min(580px, 100%);
+        padding: 8px 16px;
+        border: 1px solid #deddd7;
+        border-radius: 12px;
+        color: #68756e;
+        background: #fff;
+        font-size: 12px;
+        text-align: center;
+      }
+      .toolbar { justify-self: end; display: flex; align-items: center; gap: 12px; }
+      .toolbar span { width: 24px; height: 24px; border-radius: 8px; border: 1px solid #d7d7d0; }
+      .toolbar b {
+        display: grid;
+        width: 30px;
+        height: 30px;
+        place-items: center;
+        border-radius: 9px;
+        color: #fff;
+        background: #234d3f;
+        font-size: 14px;
+      }
+      .page {
+        position: absolute;
+        inset: 54px 0 0;
+        display: grid;
+        grid-template-columns: 210px 1fr;
+        background: #f7f5ef;
+      }
+      .sidebar {
+        padding: 34px 26px;
+        border-right: 1px solid #e0ddd4;
+        color: #6e7c74;
+      }
+      .site-mark { display: flex; align-items: center; gap: 10px; color: #264a3d; font-weight: 700; }
+      .site-mark i { width: 24px; height: 24px; border-radius: 50%; background: #c96d47; }
+      .sidebar ul { margin: 38px 0 0; padding: 0; list-style: none; }
+      .sidebar li { margin: 18px 0; font-size: 13px; }
+      .sidebar li:first-child { color: #294f41; font-weight: 700; }
+      .article { width: 650px; padding: 56px 70px; }
+      .article small { color: #a45d42; letter-spacing: .12em; }
+      .article h1 { margin: 14px 0 18px; font-family: Georgia, "Songti SC", serif; font-size: 37px; line-height: 1.2; }
+      .byline { color: #758179; font-size: 13px; }
+      .hero {
+        height: 170px;
+        margin: 28px 0 24px;
+        border-radius: 18px;
+        background:
+          linear-gradient(135deg, rgba(33, 77, 62, .92), rgba(74, 107, 87, .72)),
+          #345d4d;
+        position: relative;
+        overflow: hidden;
+      }
+      .hero::before, .hero::after {
+        content: "";
+        position: absolute;
+        width: 170px;
+        height: 120px;
+        border-radius: 12px;
+        background: #f4efe2;
+        transform: rotate(-8deg);
+        left: 70px;
+        top: 34px;
+        box-shadow: 190px 18px 0 #d8c9a7;
+      }
+      .hero::after { width: 5px; height: 90px; left: 153px; top: 49px; background: #bd6948; box-shadow: none; }
+      .article p { color: #596a62; font-family: Georgia, "Songti SC", serif; font-size: 16px; line-height: 1.8; }
+      .callout {
+        position: absolute;
+        right: 426px;
+        bottom: 42px;
+        padding: 10px 16px;
+        border-radius: 999px;
+        color: #36584a;
+        background: rgba(255, 255, 255, .88);
+        box-shadow: 0 8px 30px rgba(39, 70, 57, .12);
+        font-size: 12px;
+      }
+      iframe {
+        position: absolute;
+        z-index: 2;
+        top: 82px;
+        right: 38px;
+        width: 360px;
+        height: 510px;
+        border: 0;
+        border-radius: 16px;
+        background: #f5f3ed;
+        box-shadow: 0 24px 70px rgba(25, 46, 37, .3), 0 0 0 1px rgba(39, 63, 53, .14);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="browser">
+      <div class="browser-bar">
+        <div class="traffic"><i></i><i></i><i></i></div>
+        <div class="address">read.example.com / weekly-reading-system</div>
+        <div class="toolbar"><span></span><b>选</b></div>
+      </div>
+      <div class="page">
+        <aside class="sidebar">
+          <div class="site-mark"><i></i><span>阅读现场</span></div>
+          <ul><li>本周精选</li><li>效率与工具</li><li>数字生活</li><li>独立创作</li></ul>
+        </aside>
+        <article class="article">
+          <small>效率与工具</small>
+          <h1>如何把每周阅读，变成真正属于自己的知识收藏</h1>
+          <div class="byline">林间 · 8 分钟阅读</div>
+          <div class="hero"></div>
+          <p>收藏不只是把网页放进列表。保留来源、上下文与当时的选择，才能让信息在需要时重新出现。</p>
+        </article>
+      </div>
+      <div class="callout">识别当前页面 · 一键稍后看、收藏或订阅</div>
+      <iframe id="extension-popup" title="自选助手扩展弹窗"></iframe>
+    </div>
+    <script>
+      const mockApi = `<script>
+        Object.defineProperty(globalThis, "browser", {
+          configurable: true,
+          value: {
+            runtime: {
+              sendMessage: async (message) => {
+                if (message.type === "OUR_CHOICE_GET_CONFIG") {
+                  return { ok: true, config: { appUrl: "http://localhost:3000", pairingCode: "paired" } };
+                }
+                if (message.type === "OUR_CHOICE_GET_FOLLOW_SCAN") {
+                  return { ok: true, active: false, count: 0, previousCount: 12, auto: { running: false } };
+                }
+                return { ok: true, delivery: "desktop" };
+              }
+            },
+            scripting: { executeScript: async () => [] },
+            tabs: {
+              query: async () => [{ id: 7 }],
+              sendMessage: async () => ({
+                ok: true,
+                page: {
+                  url: "https://read.example.com/weekly-reading-system",
+                  title: "如何把每周阅读，变成真正属于自己的知识收藏",
+                  siteName: "阅读现场",
+                  selection: "保留来源、上下文与当时的选择。"
+                },
+                sourceCandidates: [{ title: "阅读现场", url: "https://read.example.com/feed.xml" }],
+                isBilibili: false,
+                isBilibiliFollowPage: false
+              })
+            }
+          }
+        });
+      <\/script>`;
+
+      async function renderPopup() {
+        const response = await fetch("/browser-extension/popup.html");
+        let source = await response.text();
+        source = source
+          .replace('href="popup.css"', 'href="/browser-extension/popup.css"')
+          .replace('<script src="extension-api.js"><\/script>', `${mockApi}<script src="/browser-extension/extension-api.js"><\/script>`)
+          .replace('<script src="popup.js"><\/script>', '<script src="/browser-extension/popup.js"><\/script>');
+        document.getElementById("extension-popup").srcdoc = source;
+      }
+      void renderPopup();
+    </script>
+  </body>
+</html>

@@ -123,6 +123,26 @@ a {
   min-height: 100vh;
 }
 
+html[data-our-choice-native="true"] {
+  height: 100%;
+  overflow: hidden;
+}
+
+html[data-our-choice-native="true"] body,
+html[data-our-choice-native="true"] .app-shell {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+html[data-our-choice-native="true"] .app-column {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+
 .sidebar {
   position: fixed;
   z-index: 40;

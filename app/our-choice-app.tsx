@@ -48,6 +48,14 @@ import {
   useState,
 } from "react";
 import {
+  fullyProcessedAssistantQueueIds,
+  isNativeDesktopHost,
+  nativeDesktopAuthorizationHeaders,
+  persistAppDataThenAcknowledge,
+  registerNativeDesktopPairing,
+  requestExtensionAssistantResponse,
+} from "./lib/browser-assistant-runtime";
+import {
   contentTypeLabels,
   defaultAppData,
   platformLabels,
@@ -69,12 +77,15 @@ import {
 const STORAGE_KEY = "our-choice:state:v1";
 const ASSISTANT_STORAGE_KEY = "our-choice:assistant:v1";
 const ASSISTANT_HANDOFF_HASH = "#browser-assistant";
+const DESKTOP_HEALTH_PATH = "/__our_choice/desktop/health";
+const DESKTOP_ASSISTANT_PATH = "/__our_choice/assistant";
 const CLIP_SOURCE_ID = "source-browser-clips";
 const ASSISTANT_IMPORT_CONCURRENCY = 6;
 const TONES: VisualTone[] = ["forest", "clay", "ocean", "sun", "plum", "ink"];
 
 type TypeFilter = "all" | ContentType;
 type DiscoverMode = "near" | "step" | "random";
+type AssistantQueueOrigin = "extension" | "desktop" | "file";
 
 interface PreviewItem {
   upstreamId: string;
@@ -447,24 +458,27 @@ function opensBilibiliVideoExternally(source: Source | undefined, item: ContentI
 }
 
 function safeExternalUrl(value: string) {
-  try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol)) return null;
-    if (typeof window !== "undefined" && url.origin === window.location.origin) return null;
-    return url.href;
-  } catch {
-    return null;
-  }
+  const normalized = normalizedPublicUrl(value);
+  if (!normalized) return null;
+  const url = new URL(normalized);
+  if (typeof window !== "undefined" && url.origin === window.location.origin) return null;
+  return normalized;
 }
 
 function normalizedPublicUrl(value: unknown) {
   if (typeof value !== "string") return null;
   try {
-    const url = new URL(value.trim());
-    if (!["http:", "https:"].includes(url.protocol)) return null;
+    const candidate = value.trim();
+    if (!candidate || candidate.length > 4_096) return null;
+    const url = new URL(candidate);
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password
+    ) return null;
     url.hash = "";
     if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
-    return url.href;
+    return url.href.length <= 4_096 ? url.href : null;
   } catch {
     return null;
   }
@@ -569,6 +583,92 @@ function normalizeAssistantQueue(value: unknown): AssistantQueueItem[] {
   return result;
 }
 
+function desktopErrorMessage(value: unknown, fallback: string) {
+  if (typeof value === "string" && value.trim()) return value;
+  if (value && typeof value === "object") {
+    const errorRecord = value as Record<string, unknown>;
+    if (typeof errorRecord.message === "string" && errorRecord.message.trim()) {
+      return errorRecord.message;
+    }
+  }
+  return fallback;
+}
+
+async function desktopRuntimeAvailable() {
+  try {
+    const response = await fetch(DESKTOP_HEALTH_PATH, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(1_500),
+    });
+    if (!response.ok) return false;
+    const payload = await response.json() as { product?: unknown };
+    return payload.product === "our-choice-desktop";
+  } catch {
+    return false;
+  }
+}
+
+async function registerDesktopPairing(pairingCode: string) {
+  return registerNativeDesktopPairing({
+    targetWindow: window,
+    pairingCode,
+    pairPath: `${DESKTOP_ASSISTANT_PATH}/pair`,
+    signal: AbortSignal.timeout(1_500),
+  });
+}
+
+async function pullDesktopAssistantQueue(pairingCode: string) {
+  try {
+    const response = await fetch(`${DESKTOP_ASSISTANT_PATH}/queue`, {
+      cache: "no-store",
+      headers: nativeDesktopAuthorizationHeaders(window, pairingCode),
+      signal: AbortSignal.timeout(1_500),
+    });
+    const payload = await response.json().catch(() => ({})) as {
+      ok?: boolean;
+      items?: unknown;
+      error?: unknown;
+    };
+    const ok = response.ok && payload.ok === true;
+    return {
+      ...payload,
+      ok,
+      error: ok
+        ? undefined
+        : desktopErrorMessage(payload.error, `Mac 应用返回 HTTP ${response.status}。`),
+    };
+  } catch {
+    return { ok: false, error: "Mac 应用的本地助手暂时没有响应。" };
+  }
+}
+
+async function acknowledgeDesktopAssistantQueue(pairingCode: string, ids: string[]) {
+  try {
+    const response = await fetch(`${DESKTOP_ASSISTANT_PATH}/ack`, {
+      method: "POST",
+      headers: {
+        ...nativeDesktopAuthorizationHeaders(window, pairingCode),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ ids }),
+      signal: AbortSignal.timeout(1_500),
+    });
+    const payload = await response.json().catch(() => ({})) as {
+      ok?: boolean;
+      error?: unknown;
+    };
+    const ok = response.ok && payload.ok === true;
+    return {
+      ok,
+      error: ok
+        ? undefined
+        : desktopErrorMessage(payload.error, `Mac 应用返回 HTTP ${response.status}。`),
+    };
+  } catch {
+    return { ok: false, error: "无法确认 Mac 应用的待处理队列。" };
+  }
+}
+
 function normalizeAppData(value: unknown): AppData | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Record<string, unknown>;
@@ -659,6 +759,7 @@ function normalizeAppData(value: unknown): AppData | null {
 
 export function OurChoiceApp() {
   const [data, setData] = useState<AppData>(cloneDefaultData);
+  const dataRef = useRef(data);
   const [hydrated, setHydrated] = useState(false);
   const [view, setView] = useState<View>("today");
   const [query, setQuery] = useState("");
@@ -683,19 +784,25 @@ export function OurChoiceApp() {
   const [viewer, setViewer] = useState<ViewerState | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantQueue, setAssistantQueue] = useState<AssistantQueueItem[]>([]);
-  const [assistantQueueOrigin, setAssistantQueueOrigin] = useState<"extension" | "file">("extension");
+  const [assistantQueueOrigin, setAssistantQueueOrigin] = useState<AssistantQueueOrigin>("extension");
   const [assistantPairingCode, setAssistantPairingCode] = useState("");
   const [assistantChecking, setAssistantChecking] = useState(false);
+  const [desktopAssistantAvailable, setDesktopAssistantAvailable] = useState(false);
+  const [nativeDesktopHost, setNativeDesktopHost] = useState(false);
   const [assistantImportTask, setAssistantImportTask] =
     useState<AssistantImportTaskState | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const assistantImportRef = useRef<HTMLInputElement>(null);
   const assistantQueueRef = useRef<AssistantQueueItem[]>([]);
-  const assistantQueueOriginRef = useRef<"extension" | "file">("extension");
+  const assistantQueueOriginRef = useRef<AssistantQueueOrigin>("extension");
   const assistantImportControllerRef = useRef<AssistantImportController | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const assistantCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -716,6 +823,7 @@ export function OurChoiceApp() {
       } catch {
         // A malformed local backup should never prevent the app from opening.
       }
+      setNativeDesktopHost(isNativeDesktopHost(window));
       setHydrated(true);
     });
     return () => window.cancelAnimationFrame(frame);
@@ -747,11 +855,57 @@ export function OurChoiceApp() {
   }, [assistantPairingCode, hydrated]);
 
   useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    void desktopRuntimeAvailable().then((available) => {
+      if (!cancelled) setDesktopAssistantAvailable(available);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || !desktopAssistantAvailable) return;
+    void registerDesktopPairing(assistantPairingCode);
+  }, [assistantPairingCode, desktopAssistantAvailable, hydrated]);
+
+  useEffect(() => {
     const handoffRequested = hydrated && window.location.hash === ASSISTANT_HANDOFF_HASH;
     let handoffSettled = false;
     const retryTimers: Array<ReturnType<typeof setTimeout>> = [];
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-    function requestQueue() {
+    function receiveQueueResponse(
+      response: { ok?: boolean; items?: unknown; error?: string } | undefined,
+      origin: Exclude<AssistantQueueOrigin, "file">,
+    ) {
+      handoffSettled = true;
+      if (assistantCheckTimer.current) clearTimeout(assistantCheckTimer.current);
+      setAssistantChecking(false);
+      if (!response?.ok) {
+        if (handoffRequested) {
+          setSettingsOpen(true);
+          if (response?.error) showToast({ message: response.error });
+        }
+        return;
+      }
+      const items = normalizeAssistantQueue(response.items);
+      if (assistantQueueOriginRef.current === "file" && assistantQueueRef.current.length) return;
+      const queueChanged = items.map((item) => item.id).join("\n") !==
+        assistantQueueRef.current.map((item) => item.id).join("\n");
+      assistantQueueRef.current = items;
+      assistantQueueOriginRef.current = origin;
+      setAssistantQueue(items);
+      setAssistantQueueOrigin(origin);
+      if (items.length && (queueChanged || handoffRequested)) {
+        if (!assistantImportControllerRef.current) setAssistantOpen(true);
+      } else if (handoffRequested) {
+        showToast({ message: "浏览器助手没有待处理内容，请返回扩展重试。" });
+      }
+    }
+
+    function requestExtensionQueue() {
       if (!assistantPairingCode) return;
       window.postMessage(
         {
@@ -764,34 +918,28 @@ export function OurChoiceApp() {
       );
     }
 
+    function requestQueue() {
+      if (desktopAssistantAvailable) {
+        if (!nativeDesktopHost && !assistantPairingCode) return;
+        void pullDesktopAssistantQueue(assistantPairingCode).then((response) => {
+          receiveQueueResponse(response, "desktop");
+        });
+      } else {
+        if (!assistantPairingCode) return;
+        requestExtensionQueue();
+      }
+    }
+
     function handleAssistantMessage(event: MessageEvent) {
       if (event.source !== window || event.origin !== window.location.origin) return;
       if (event.data?.source !== "our-choice-extension") return;
       if (event.data.type === "OUR_CHOICE_EXTENSION_READY") {
-        requestQueue();
+        if (!desktopAssistantAvailable) requestExtensionQueue();
         return;
       }
       if (event.data.type !== "OUR_CHOICE_QUEUE_RESPONSE") return;
-      handoffSettled = true;
-      if (assistantCheckTimer.current) clearTimeout(assistantCheckTimer.current);
-      setAssistantChecking(false);
       const response = event.data.response as { ok?: boolean; items?: unknown; error?: string } | undefined;
-      if (!response?.ok) {
-        setSettingsOpen(true);
-        if (response?.error) showToast({ message: response.error });
-        return;
-      }
-      const items = normalizeAssistantQueue(response.items);
-      if (assistantQueueOriginRef.current === "file" && assistantQueueRef.current.length) return;
-      assistantQueueRef.current = items;
-      assistantQueueOriginRef.current = "extension";
-      setAssistantQueue(items);
-      setAssistantQueueOrigin("extension");
-      if (items.length) {
-        if (!assistantImportControllerRef.current) setAssistantOpen(true);
-      } else if (handoffRequested) {
-        showToast({ message: "浏览器助手没有待处理内容，请返回扩展重试。" });
-      }
+      receiveQueueResponse(response, "extension");
     }
 
     window.addEventListener("message", handleAssistantMessage);
@@ -803,10 +951,10 @@ export function OurChoiceApp() {
 
     if (handoffRequested) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-      if (!assistantPairingCode) {
+      if (!nativeDesktopHost && !assistantPairingCode) {
         retryTimers.push(setTimeout(() => {
           setSettingsOpen(true);
-          showToast({ message: "请先生成配对码，并在扩展连接设置中保存同一个配对码。" });
+          showToast({ message: "请打开 Mac 应用自动连接，或为网页模式配置配对码。" });
         }, 0));
       } else {
         retryTimers.push(setTimeout(() => {
@@ -824,22 +972,26 @@ export function OurChoiceApp() {
           if (handoffSettled) return;
           setAssistantChecking(false);
           setSettingsOpen(true);
-          showToast({ message: "浏览器助手没有响应，请重新加载扩展并确认配对码相同。" });
+          showToast({ message: "浏览器助手没有响应，请重新加载扩展并确认 Mac 应用正在运行。" });
         }, 1_800);
       }
     }
     if (hydrated) requestQueue();
+    if (hydrated && desktopAssistantAvailable && (nativeDesktopHost || assistantPairingCode)) {
+      pollTimer = setInterval(requestQueue, 2_000);
+    }
     return () => {
       window.removeEventListener("message", handleAssistantMessage);
       window.removeEventListener("focus", requestQueue);
       document.removeEventListener("visibilitychange", requestWhenVisible);
       for (const timer of retryTimers) clearTimeout(timer);
+      if (pollTimer) clearInterval(pollTimer);
       if (handoffRequested && assistantCheckTimer.current) {
         clearTimeout(assistantCheckTimer.current);
         assistantCheckTimer.current = null;
       }
     };
-  }, [assistantPairingCode, hydrated]);
+  }, [assistantPairingCode, desktopAssistantAvailable, hydrated, nativeDesktopHost]);
 
   useEffect(() => {
     function handleStorage(event: StorageEvent) {
@@ -1374,7 +1526,12 @@ export function OurChoiceApp() {
     const existingUrls = new Set(data.items.map((item) => item.url));
     const prepared = results.map((result) => {
       if (!result.preview || result.preview.mode !== "live") {
-        return { ...result, additions: [] as ContentItem[], observedIds: [] as string[] };
+        return {
+          ...result,
+          additions: [] as ContentItem[],
+          observedIds: [] as string[],
+          firstIdentityVerification: false,
+        };
       }
       const discoveredAt = result.preview.fetchedAt ?? new Date().toISOString();
       const normalized = normalizePreviewItems(result.source, result.preview.items, {
@@ -1653,6 +1810,7 @@ export function OurChoiceApp() {
     crypto.getRandomValues(bytes);
     const code = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
     setAssistantPairingCode(code);
+    if (desktopAssistantAvailable) void registerDesktopPairing(code);
     showToast({ message: "新的浏览器助手配对码已生成" });
   }
 
@@ -1667,21 +1825,39 @@ export function OurChoiceApp() {
   }
 
   function revokeAssistantPairing() {
+    if (desktopAssistantAvailable) void registerDesktopPairing("");
     setAssistantPairingCode("");
     assistantQueueRef.current = [];
-    assistantQueueOriginRef.current = "extension";
+    assistantQueueOriginRef.current = desktopAssistantAvailable ? "desktop" : "extension";
     setAssistantQueue([]);
     setAssistantOpen(false);
     showToast({ message: "浏览器助手配对已撤销" });
   }
 
   function checkAssistantQueue() {
-    if (!assistantPairingCode) {
+    if (!nativeDesktopHost && !assistantPairingCode) {
       setSettingsOpen(true);
-      showToast({ message: "请先在设置中生成浏览器助手配对码" });
+      showToast({ message: "请打开 Mac 应用自动连接，或为网页模式生成配对码" });
       return;
     }
     setAssistantChecking(true);
+    if (desktopAssistantAvailable) {
+      void pullDesktopAssistantQueue(assistantPairingCode).then((response) => {
+        setAssistantChecking(false);
+        if (!response.ok) {
+          showToast({ message: response.error || "Mac 应用的本地助手没有响应" });
+          return;
+        }
+        const items = normalizeAssistantQueue(response.items);
+        assistantQueueRef.current = items;
+        assistantQueueOriginRef.current = "desktop";
+        setAssistantQueue(items);
+        setAssistantQueueOrigin("desktop");
+        if (items.length) setAssistantOpen(true);
+        else showToast({ message: "浏览器助手没有待处理内容" });
+      });
+      return;
+    }
     window.postMessage(
       {
         source: "our-choice-app",
@@ -1694,22 +1870,34 @@ export function OurChoiceApp() {
     if (assistantCheckTimer.current) clearTimeout(assistantCheckTimer.current);
     assistantCheckTimer.current = setTimeout(() => {
       setAssistantChecking(false);
-      showToast({ message: "没有收到扩展响应，请确认已安装、启用并填写相同配对码" });
+      showToast({ message: "没有收到扩展响应，请确认扩展已安装并启用" });
     }, 1_800);
   }
 
-  function acknowledgeAssistantQueue(ids: string[]) {
-    if (!ids.length || !assistantPairingCode) return;
-    window.postMessage(
-      {
+  async function acknowledgeAssistantQueue(ids: string[]) {
+    if (!ids.length) {
+      return { ok: false, error: "没有可确认的队列项。" };
+    }
+    if (assistantQueueOriginRef.current === "desktop") {
+      if (!nativeDesktopHost && !assistantPairingCode) {
+        return { ok: false, error: "本地连接尚未建立。" };
+      }
+      return acknowledgeDesktopAssistantQueue(assistantPairingCode, ids);
+    }
+    if (!assistantPairingCode) {
+      return { ok: false, error: "网页模式尚未配对。" };
+    }
+    return requestExtensionAssistantResponse({
+      targetWindow: window,
+      request: {
         source: "our-choice-app",
         type: "OUR_CHOICE_ACK_QUEUE",
         requestId: createId("assistant-ack"),
         pairingCode: assistantPairingCode,
         ids,
       },
-      window.location.origin,
-    );
+      responseType: "OUR_CHOICE_ACK_RESPONSE",
+    });
   }
 
   async function importAssistantJson(event: ChangeEvent<HTMLInputElement>) {
@@ -1744,8 +1932,26 @@ export function OurChoiceApp() {
     const selectedClipIds = new Set(selection.clipIds);
     const selectedSourceKeys = new Set(selection.sourceKeys);
     const allQueueIds = assistantQueue.map((item) => item.id);
+    const queueGroups = assistantQueue.map((item) => {
+      if (item.kind === "clip") {
+        return { id: item.id, requiredKeys: [`clip:${item.id}`] };
+      }
+      if (item.kind === "source") {
+        return {
+          id: item.id,
+          requiredKeys: [`${item.id}:${comparableSourceUrl(item.candidate.url)}`],
+        };
+      }
+      return {
+        id: item.id,
+        requiredKeys: item.candidates.map(
+          (candidate) => `${item.id}:${comparableSourceUrl(candidate.url)}`,
+        ),
+      };
+    });
     const failedQueueIds = new Set<string>();
     const completedRequestKeys = new Set<string>();
+    const successfullyProcessedKeys = new Set<string>();
     const selectedClips = assistantQueue.filter(
       (item): item is Extract<AssistantQueueItem, { kind: "clip" }> =>
         item.kind === "clip" && selectedClipIds.has(item.id),
@@ -1796,6 +2002,19 @@ export function OurChoiceApp() {
           .map((request) => [comparableSourceUrl(request.candidate.url), request]),
       ).values(),
     );
+    const markSourceUrlProcessed = (url: string) => {
+      const comparable = comparableSourceUrl(url);
+      for (const request of sourceRequests) {
+        if (comparableSourceUrl(request.candidate.url) === comparable) {
+          successfullyProcessedKeys.add(request.key);
+        }
+      }
+    };
+    for (const request of sourceRequests) {
+      if (existingSourceUrls.has(comparableSourceUrl(request.candidate.url))) {
+        successfullyProcessedKeys.add(request.key);
+      }
+    }
     const taskId = createId("assistant-import");
     const controller: AssistantImportController = {
       id: taskId,
@@ -1953,6 +2172,7 @@ export function OurChoiceApp() {
                   }).map((item) => item.id)
                 : [];
             preparedSources[index] = source;
+            markSourceUrlProcessed(request.candidate.url);
             completedRequestKeys.add(request.key);
             completedCount += 1;
             importedCount += 1;
@@ -1990,7 +2210,7 @@ export function OurChoiceApp() {
     });
     const savedSources = sourcesToSave.length;
 
-    setData((current) => {
+    const nextData = ((current: AppData) => {
       const sources = [...current.sources];
       const items = [...current.items];
       const collections = current.collections.map((collection) => ({
@@ -2062,6 +2282,7 @@ export function OurChoiceApp() {
         }
         if (!target.itemIds.includes(item.id)) target.itemIds.unshift(item.id);
         target.updatedLabel = "刚刚";
+        successfullyProcessedKeys.add(`clip:${queued.id}`);
       }
 
       const currentUrls = new Set(
@@ -2075,17 +2296,45 @@ export function OurChoiceApp() {
       }
 
       return { ...current, sources, items, collections };
-    });
+    })(dataRef.current);
 
-    const acknowledgedIds = allQueueIds.filter((id) => !failedQueueIds.has(id));
-    if (assistantQueueOrigin === "extension") acknowledgeAssistantQueue(acknowledgedIds);
+    const acknowledgedIds = fullyProcessedAssistantQueueIds(
+      queueGroups,
+      successfullyProcessedKeys,
+    );
+    const acknowledgement = await persistAppDataThenAcknowledge({
+        storage: window.localStorage,
+        storageKey: STORAGE_KEY,
+        nextData,
+        onPersisted(persistedData) {
+          dataRef.current = persistedData;
+          setData(persistedData);
+        },
+        acknowledge: async () => {
+          if (assistantQueueOrigin === "file" || !acknowledgedIds.length) {
+            return { ok: true, error: undefined };
+          }
+          const result = await acknowledgeAssistantQueue(acknowledgedIds);
+          return result;
+        },
+      }).catch((error: unknown) => ({
+        ok: false,
+        error: error instanceof Error && error.message
+          ? `本地数据保存失败：${error.message}`
+          : "本地数据保存失败。",
+      }));
+    const acknowledgedQueueIds = acknowledgement.ok ? acknowledgedIds : [];
     setAssistantQueue((current) => {
-      const next = current.filter((item) => !acknowledgedIds.includes(item.id));
+      const next = current.filter((item) => !acknowledgedQueueIds.includes(item.id));
       assistantQueueRef.current = next;
-      if (!next.length) assistantQueueOriginRef.current = "extension";
+      if (!next.length) {
+        assistantQueueOriginRef.current = desktopAssistantAvailable ? "desktop" : "extension";
+      }
       return next;
     });
-    if (acknowledgedIds.length === allQueueIds.length) setAssistantQueueOrigin("extension");
+    if (acknowledgedQueueIds.length === allQueueIds.length) {
+      setAssistantQueueOrigin(desktopAssistantAvailable ? "desktop" : "extension");
+    }
     if (assistantImportControllerRef.current?.id === taskId) {
       assistantImportControllerRef.current = null;
     }
@@ -2103,7 +2352,7 @@ export function OurChoiceApp() {
     );
     if (savedSources) setView("subscriptions");
     showToast({
-      message: `${controller.cancelled ? "导入已取消；" : ""}已收藏 ${savedClips} 条、订阅 ${savedSources} 个；跳过 ${duplicateCount} 个重复项${failedQueueIds.size ? `，${failedQueueIds.size} 组待重试` : ""}`,
+      message: `${controller.cancelled ? "导入已取消；" : ""}已收藏 ${savedClips} 条、订阅 ${savedSources} 个；跳过 ${duplicateCount} 个重复项${failedQueueIds.size ? `，${failedQueueIds.size} 组待重试` : ""}${acknowledgement.ok ? "" : `；${acknowledgement.error}，队列已保留`}`,
     });
   }
 
@@ -2619,6 +2868,7 @@ export function OurChoiceApp() {
           data={data}
           assistantPairingCode={assistantPairingCode}
           assistantChecking={assistantChecking}
+          nativeDesktopHost={nativeDesktopHost}
           onClose={() => setSettingsOpen(false)}
           onExport={exportData}
           onImport={() => importRef.current?.click()}
@@ -3863,8 +4113,12 @@ function Modal({
       'button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
     );
     focusable?.focus();
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    const nativeScrollContainer = document.documentElement.dataset.ourChoiceNative === "true"
+      ? document.querySelector<HTMLElement>(".app-column")
+      : null;
+    const scrollContainer = nativeScrollContainer ?? document.body;
+    const previousOverflow = scrollContainer.style.overflow;
+    scrollContainer.style.overflow = "hidden";
 
     function handleKeydown(event: KeyboardEvent) {
       if (event.key === "Escape") {
@@ -3893,7 +4147,7 @@ function Modal({
     document.addEventListener("keydown", handleKeydown);
     return () => {
       document.removeEventListener("keydown", handleKeydown);
-      document.body.style.overflow = previousOverflow;
+      scrollContainer.style.overflow = previousOverflow;
       previousFocus?.focus();
     };
   }, [onClose]);
@@ -5281,6 +5535,7 @@ function SettingsModal({
   data,
   assistantPairingCode,
   assistantChecking,
+  nativeDesktopHost,
   onClose,
   onExport,
   onImport,
@@ -5296,6 +5551,7 @@ function SettingsModal({
   data: AppData;
   assistantPairingCode: string;
   assistantChecking: boolean;
+  nativeDesktopHost: boolean;
   onClose: () => void;
   onExport: () => void;
   onImport: () => void;
@@ -5339,20 +5595,24 @@ function SettingsModal({
               <h3>浏览器助手</h3>
               <p>收藏当前网页、订阅来源，或从 B站关注页批量导入。</p>
             </div>
-            <span>{assistantPairingCode ? "已生成配对码" : "尚未配对"}</span>
+            <span>{nativeDesktopHost ? "原生应用已自动连接" : assistantPairingCode ? "网页模式已配对" : "网页模式尚未配对"}</span>
           </div>
           <div className="assistant-privacy-note">
             <ShieldCheck size={18} />
             <p>扩展不会读取密码或 Cookie；只有你主动点击后，公开页面信息才会进入本地待处理队列。</p>
           </div>
-          {assistantPairingCode ? (
+          {nativeDesktopHost ? (
+            <div className="assistant-pairing-panel">
+              <p>Mac 原生应用已自动连接。Chrome 与 Safari 扩展会自动发现端口并建立短期本机会话，无需复制配对码。</p>
+            </div>
+          ) : assistantPairingCode ? (
             <div className="assistant-pairing-panel">
               <label htmlFor="assistant-pairing-code">配对码</label>
               <div>
                 <input id="assistant-pairing-code" value={assistantPairingCode} readOnly />
                 <button type="button" onClick={onCopyAssistantCode}>复制</button>
               </div>
-              <p>将配对码粘贴到扩展的连接设置。它独立保存在本机，不会进入 JSON 备份。</p>
+              <p>这个配对码仅用于 Docker / 普通浏览器网页模式，不会进入 JSON 备份。</p>
             </div>
           ) : (
             <button className="secondary-button assistant-generate-button" type="button" onClick={onGenerateAssistantCode}>
@@ -5360,21 +5620,21 @@ function SettingsModal({
             </button>
           )}
           <div className="assistant-setting-actions">
-            <button type="button" onClick={onCheckAssistant} disabled={assistantChecking || !assistantPairingCode}>
+            <button type="button" onClick={onCheckAssistant} disabled={assistantChecking || (!nativeDesktopHost && !assistantPairingCode)}>
               <RefreshCw className={assistantChecking ? "is-spinning" : ""} size={16} />
               {assistantChecking ? "正在检查" : "检查待处理内容"}
             </button>
             <button type="button" onClick={onImportAssistant}>
               <Upload size={16} /> 导入助手 JSON
             </button>
-            {assistantPairingCode && (
+            {!nativeDesktopHost && assistantPairingCode && (
               <button className="danger-text-button" type="button" onClick={onRevokeAssistantCode}>
                 重新配对 / 撤销
               </button>
             )}
           </div>
           <p className="assistant-install-note">
-            开发版扩展位于仓库 <code>browser-extension/</code>，在 Chrome 或 Edge 中选择“加载已解压的扩展程序”。
+            Chrome / Edge 开发版位于仓库 <code>browser-extension/</code>；Safari Web Extension 随 Mac 安装包交付，安装后仍需在 Safari 设置中由你启用。
           </p>
         </section>
 

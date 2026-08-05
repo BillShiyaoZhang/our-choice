@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="自选助手浏览器扩展隐私政策。" />
+    <meta name="theme-color" content="#f5f3ec" />
+    <title>自选助手隐私政策｜Our Choice</title>
+    <link rel="stylesheet" href="./assets/docs.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#privacy-content">跳到正文</a>
+    <header class="site-header">
+      <a class="wordmark" href="./" aria-label="返回自选文档">
+        <span class="wordmark-mark" aria-hidden="true"><i></i></span>
+        <span><strong>自选助手</strong><small>PRIVACY POLICY</small></span>
+      </a>
+      <div class="header-actions"><a class="quiet-link" href="./">返回文档</a></div>
+    </header>
+
+    <main id="privacy-content" class="docs-shell" tabindex="-1">
+      <article class="doc-section section-block" style="max-width: 900px; margin: 0 auto;">
+        <div class="section-heading compact">
+          <span class="section-number">01</span>
+          <div><p class="section-kicker">EFFECTIVE 2026-08-04</p><h1>自选助手浏览器扩展隐私政策</h1></div>
+        </div>
+        <p class="lead">“自选助手”在用户打开扩展弹窗时检查当前活动页，以便显示页面预览和可用操作；收藏、订阅或扫描等后续动作才会保存或发送相应数据。扩展只把用户明确选择的内容交给其自己设备上的“自选”应用，不运营云端账号服务，不出售数据，也不用于广告、画像或分析。</p>
+
+        <h2>处理的数据与触发时机</h2>
+        <ul class="plain-list">
+          <li><strong>当前页面：</strong>用户打开扩展弹窗时，立即检查活动页的规范 URL、标题、站点名称、公开摘要/封面，以及最多 2,000 个字符的选中文字，用于在弹窗中显示预览、判断可用操作和准备候选来源。检查结果暂存在弹窗内存中；只有用户点击收藏或订阅后，相应数据才会进入本地队列或发送给“自选”。</li>
+          <li><strong>Bilibili 关注页：</strong>用户打开扩展弹窗时，也会检查当前 Bilibili 页面可见的公开 MID、昵称、头像和主页 URL，用于识别页面并准备候选数据；此时不会写入扫描快照或发送账号列表。只有用户启动扫描后，扫描结果才保存在本机；完成扫描后才会发送待确认的来源列表。</li>
+          <li><strong>本机连接：</strong>保存经产品健康检查自动发现或用户高级覆盖的 <code>http://localhost:&lt;显式端口&gt;</code> / <code>http://127.0.0.1:&lt;显式端口&gt;</code> 地址（自动范围为 3000...3031）、安装版 Mac 应用的短期会话、可选的 Docker / 网页模式配对码和最近打开的本地应用标签页编号。</li>
+          <li><strong>本地队列：</strong>桌面应用暂时不可用时，保存上述待处理项目、随机项目 ID 和创建时间；队列最多保留 500 项。</li>
+        </ul>
+
+        <h2>存储、传输与共享</h2>
+        <p>配置、队列和 Bilibili 扫描快照保存在浏览器的 <code>storage.local</code> 中。连接成功后，数据只通过 HTTP loopback 发送到同一台设备上由用户运行的“自选”网站或 Mac 应用；安装版使用应用每次启动重新生成的短期会话，Docker / 网页模式使用可选配对码，请求明确省略浏览器凭据。扩展不会把这些数据发送给项目开发者、广告商、分析服务或其他第三方。</p>
+        <p><strong>我们不出售、出租或交易任何用户数据。</strong>我们不读取或保存密码、Cookie、访问令牌、完整浏览历史或后台访问的其他标签页，也不使用远程托管代码。</p>
+
+        <h2>保留与删除</h2>
+        <p>成功交给本地应用的队列项目会从扩展队列删除；未送达项目保留到再次投递、用户确认删除或卸载扩展。连接配置保留到用户修改、清除扩展数据或卸载扩展。关注扫描快照保留在本机，用于下一次扫描时显示新增与减少；开始新扫描会更新它。用户可以从弹窗导出待处理队列，并可在浏览器扩展管理页清除数据或卸载扩展。</p>
+
+        <h2>权限用途</h2>
+        <ul class="plain-list">
+          <li><code>activeTab</code>：只读取用户当前主动选择的标签页。</li>
+          <li><code>scripting</code>：用户打开扩展弹窗时，在其主动选择的活动页注入页面检查器；用户启动 Bilibili 关注扫描时，继续读取已渲染的公开账号卡片并执行翻页。</li>
+          <li><code>storage</code>：在本机保存连接设置、待处理队列和增量扫描快照。</li>
+          <li>loopback host 权限：只连接用户自己设备上的“自选”服务。</li>
+        </ul>
+
+        <h2>Chrome Web Store Limited Use</h2>
+        <p>自选助手对从 Chrome APIs 获得的信息的使用遵守 Chrome Web Store User Data Policy（包括 Limited Use 要求）：数据只用于用户可见的收藏、订阅和导入功能，不用于广告、信用评估或与单一用途无关的转移，也不允许人工读取。</p>
+
+        <h2>联系我们</h2>
+        <p>隐私问题、数据删除或安全报告请通过 <a href="https://github.com/BillShiyaoZhang/our-choice/issues">项目 GitHub Issues</a> 联系。政策发生实质变化时，本页会更新生效日期，并在扩展发布资料中披露。</p>
+
+        <hr />
+
+        <h2 lang="en">English summary</h2>
+        <p lang="en">When the user opens the extension popup, Our Choice Assistant inspects the active page URL, title, public metadata, up to 2,000 characters of selected text, and visible public Bilibili account IDs, names, avatars, and profile URLs so it can render the preview and determine available actions. These inspection results remain temporary until the user chooses to save or subscribe; Bilibili scan results are stored only after the user starts a scan and are sent only after completion. Connection settings, the pairing code, pending items, and scan snapshots stay in the browser’s local extension storage.</p>
+        <p lang="en">Data is sent only to an explicit port from 1 through 65535 on <code>http://localhost:&lt;port&gt;</code> or <code>http://127.0.0.1:&lt;port&gt;</code> (default 3000), where the user runs their own Our Choice companion app. We do not sell data, serve ads, run analytics, share data with third parties, read cookies or passwords, collect full browsing history, or execute remotely hosted code. Delivered queue items are removed; remaining local data can be cleared from the browser’s extension settings or by uninstalling the extension.</p>
+      </article>
+    </main>
+  </body>
+</html>

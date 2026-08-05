@@ -40,6 +40,7 @@
           <a href="#overview">产品概览</a>
           <a href="#capabilities">能力与边界</a>
           <a href="#quick-start">快速开始</a>
+          <a href="#macos-app">macOS 本地应用</a>
           <p>用户指南</p>
           <a href="#user-guide">使用路径</a>
           <a href="#subscriptions">添加与管理订阅</a>
@@ -145,6 +146,45 @@ npm run dev</code></pre>
           </div>
         </section>
 
+        <section class="doc-section section-block" id="macos-app" data-doc-section data-keywords="macOS Mac 本地应用 Safari Web Extension PKG 安装 Node Vinext">
+          <div class="section-heading compact"><span class="section-number">02+</span><div><h2>macOS 本地应用与单包安装</h2></div></div>
+          <p class="lead">Mac 版用原生 Swift/WKWebView 包装同一套网站，并内置 Node 22、Vinext 生产产物和浏览器助手；运行应用不要求预装 Node.js 或 Docker。</p>
+          <div class="prose-grid">
+            <div>
+              <h3>开发构建</h3>
+              <div class="code-block">
+                <div class="code-head"><span>Terminal</span><button type="button" data-copy-target="mac-build-code">复制</button></div>
+                <pre id="mac-build-code"><code>npm run mac:build
+open "build/macos/Our Choice.app"</code></pre>
+              </div>
+              <p>应用只监听 loopback，并在退出时关闭自己启动的服务。它优先使用 3000；端口被 Docker 或 Dev Container 占用时自动尝试 3001...3031，浏览器助手会验证健康端点并自动记住实际地址，不需要用户同步端口。专项开发仍可用 <code>OUR_CHOICE_PORT</code> 显式覆盖。</p>
+              <h3>无证书本机安装测试</h3>
+              <div class="code-block">
+                <div class="code-head"><span>Terminal</span><button type="button" data-copy-target="mac-package-local-code">复制</button></div>
+                <pre id="mac-package-local-code"><code>DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer npm run mac:package-local
+open build/macos/Our-Choice-local-unsigned.pkg</code></pre>
+              </div>
+              <p>产物为 <code>build/macos/Our-Choice-local-unsigned.pkg</code>。它是明确未签名、未公证且只支持当前 Mac 架构的测试包，会安装或覆盖 <code>/Applications/Our Choice.app</code>，不得上传或对外分发。</p>
+            </div>
+            <div>
+              <h3>发行安装程序</h3>
+              <div class="code-block">
+                <div class="code-head"><span>Terminal</span><button type="button" data-copy-target="mac-package-code">复制</button></div>
+                <pre id="mac-package-code"><code>npm run mac:package</code></pre>
+              </div>
+              <p>该命令需要完整 Xcode、Apple Developer Program、双架构 Node、<code>Developer ID Application</code> 与 <code>Developer ID Installer</code> 身份，以及 App Store Connect API key 或已保存的公证 profile。它把 Safari <code>.appex</code> 嵌入主应用，再签名、公证并生成安装到 <code>/Applications</code> 的 PKG；显式传入 <code>--skip-notarization</code> 时只生成固定名为 <code>Our-Choice-signed-unnotarized.pkg</code> 的本地预检包。</p>
+              <ol>
+                <li>从 Apple Developer 创建或下载两类 Developer ID 证书，并连同私钥导入构建机钥匙串。</li>
+                <li>记录 Team ID，创建公证用 App Store Connect API key 或保存 <code>notarytool</code> profile。</li>
+                <li>把证书、密码与公证 key 配置到受保护的 <code>macos-release</code> environment，再手动触发正式 workflow。</li>
+              </ol>
+              <p>正式 workflow 默认使用 Chrome <code>manual</code> 模式，不需要 Chrome Web Store 账号；商店公开发布后才可选择 <code>store</code> 模式。</p>
+            </div>
+          </div>
+          <aside class="note security"><strong>浏览器仍掌握最终授权</strong><p>本机 unsigned 包安装后先首次启动宿主 App；打开“Safari → 设置 → 高级”并启用“显示开发者功能”，再从菜单栏“开发”菜单选择“允许未签名扩展”。该允许会在 Safari 每次退出后重置；之后到“Safari → 设置 → 扩展”启用“自选助手”并授权。正式 Developer ID 签名包无需允许未签名扩展，但仍需在扩展设置中启用和授权。Chrome/Edge 默认由用户在扩展管理页启用开发者模式，手动加载 App 内资源：以“加载已解压的扩展程序”选择 <code>/Applications/Our Choice.app/Contents/Resources/browser-extension/chrome</code>；安装器不会静默启用扩展。</p></aside>
+          <p>浏览器助手通过安装版 Mac 应用每次启动重新生成的短期会话保护本地持久队列，自动发现端口后把内容交给 Mac 应用；Docker / 网页模式仍可使用手工配对。这样避免 Chrome、Safari 与 WKWebView 各自隔离的 <code>localStorage</code> 造成错投。完整产品数据仍使用设置中的 JSON 导入导出显式迁移。架构、签名和双架构验收见 <code>docs/spec/macos-local-app.md</code>。</p>
+        </section>
+
         <section class="doc-section section-block audience-section" id="user-guide" data-doc-section data-keywords="用户 入门 使用流程 今日 发现 合集 搜索 专注">
           <div class="audience-label">USER GUIDE</div>
           <div class="section-heading">
@@ -183,17 +223,18 @@ npm run dev</code></pre>
           <div class="callout warning"><span aria-hidden="true">!</span><div><strong>无法识别网页？</strong><p>优先粘贴网站公开的 RSS/Atom 地址。普通网页只有声明了公开 Feed 时才能自动发现。</p></div></div>
         </section>
 
-        <section class="doc-section section-block" id="browser-assistant" data-doc-section data-keywords="自选浏览器助手 插件 Chrome Edge 收藏 订阅 B站 关注 导入 扫描本页 配对码">
+        <section class="doc-section section-block" id="browser-assistant" data-doc-section data-keywords="自选浏览器助手 插件 Chrome Edge Safari 收藏 订阅 B站 关注 导入 扫描本页 配对码">
           <div class="section-heading compact"><span class="section-number">04+</span><div><h2>自选浏览器助手</h2></div></div>
-          <p class="lead">随仓库提供的 Manifest V3 扩展可以在用户浏览时收藏当前内容、订阅当前来源，并把 B站关注页中的 UP 主批量送回自选确认。平台登录始终留在原网站，扩展不会读取或保存密码、Cookie 或访问令牌。</p>
+          <p class="lead">Chrome、Edge 与 Safari 共用同一套 Manifest V3 源码，可以在用户浏览时收藏当前内容、订阅当前来源，并把 B站关注页中的 UP 主批量送回自选确认。平台登录始终留在原网站，扩展不会读取或保存密码、Cookie 或访问令牌。</p>
           <div class="prose-grid">
             <div>
-              <h3>安装与配对</h3>
+              <h3>安装与自动连接</h3>
               <ol>
-                <li>在 Chrome 或 Edge 的扩展管理页启用开发者模式。</li>
-                <li>选择“加载已解压的扩展程序”，指向仓库的 <code>browser-extension/</code>。</li>
-                <li>在自选“设置 → 浏览器助手”生成配对码，复制到扩展连接设置。</li>
-                <li>点击“检查待处理内容”验证连接；配对码单独保存在本机，不进入备份。</li>
+                <li>在 <code>chrome://extensions</code> 或 <code>edge://extensions</code> 启用开发者模式。</li>
+                <li>选择“加载已解压的扩展程序”：已安装 Mac 应用时指向 <code>/Applications/Our Choice.app/Contents/Resources/browser-extension/chrome</code>；源码开发时先运行 <code>npm run extensions:build</code>，再指向 <code>build/browser-extensions/chrome/</code>。</li>
+                <li>Safari 版本随 Mac 应用安装；正式签名版到“Safari → 设置 → 扩展”启用并授权。本机 unsigned 版还要先在“高级”显示开发者功能，再从“开发”菜单允许未签名扩展；退出 Safari 后需重新允许。</li>
+                <li>打开安装版 Mac 应用；扩展会自动发现 3000...3031 中的实际端口并建立短期会话。</li>
+                <li>点击“检查待处理内容”验证连接；无需复制配对码。Docker / 网页模式才使用高级设置中的手工配对。</li>
               </ol>
             </div>
             <div>
@@ -210,6 +251,7 @@ npm run dev</code></pre>
           </ol>
           <p>可选范围包括：UP 主图文、投币视频、动态、粉丝、关注用户、点赞视频、用户追番列表、默认收藏夹和投稿；默认只选择投稿。普通添加订阅、浏览器助手单个来源、批量导入及来源设置都使用同一套多选项。确认批量导入后，任务会在独立的右上角进度窗口中继续，可收起、暂停、继续或取消；最多六个账号并行处理，并省去每个 B站账号重复发现内容范围的请求。粉丝与关注用户依赖登录 UID 及自建 RSSHub 的 B站 Cookie 配置；投币、点赞、追番与收藏夹也受目标用户公开设置影响。</p>
           <aside class="note security"><strong>增量而非强制镜像</strong><p>相对上次完整扫描新增的账号默认勾选；不再出现的账号只作提示，不会自动暂停或删除自选里的来源。扩展不读取 Cookie；登录失效、验证码、重复页、超时或页面改版会安全停止，因此每次仍需要用户确认。</p></aside>
+          <p>扩展处理的数据、保存期限和权限用途见独立的<a href="./browser-extension-privacy.html">自选助手隐私政策</a>。</p>
         </section>
 
         <section class="doc-section section-block" id="reading" data-doc-section data-keywords="今日 阅读 稍后 合集 发现 搜索 安静 专注 筛选">
@@ -237,7 +279,7 @@ npm run dev</code></pre>
             <li><strong>恢复：</strong>在同一区域导入此前导出的 JSON；导入前请确认文件来源。</li>
             <li><strong>跨标签页：</strong>同一站点下的其他标签页会收到存储变化。</li>
             <li><strong>平台会话：</strong>内嵌页面只有在浏览器与平台允许第三方 Cookie 或 Storage Access 时才能沿用登录状态；自选只记录平台地址和最近打开时间，不接触密码或 Cookie 内容。</li>
-            <li><strong>助手配对：</strong><code>our-choice:assistant:v1</code> 只保存本地配对码，不进入应用状态或 JSON 备份；扩展待处理队列保存在扩展自己的本地存储中。</li>
+            <li><strong>助手连接：</strong>安装版使用应用进程短期会话并在重启后自动续连；<code>our-choice:assistant:v1</code> 只为 Docker / 网页模式保存本地配对码，不进入应用状态或 JSON 备份；扩展待处理队列保存在扩展自己的本地存储中。</li>
             <li><strong>清理提醒：</strong>清除浏览器站点数据会删除本地内容，操作前请先导出。</li>
           </ul>
         </section>
@@ -269,6 +311,12 @@ npm run dev</code></pre>
               <tr><td><code>npm test</code></td><td>运行生产构建与 Node 测试</td></tr>
               <tr><td><code>npm run lint</code></td><td>执行 ESLint 静态检查</td></tr>
               <tr><td><code>npm run docs:sync</code></td><td>将 <code>docs/</code> 复制到 <code>public/docs/</code></td></tr>
+              <tr><td><code>npm run extensions:build</code></td><td>从共用源码生成 Chrome 与 Safari WebExtension 资源</td></tr>
+              <tr><td><code>npm run extensions:package:chrome</code></td><td>生成并复验 Chrome Web Store 版本化上传 ZIP</td></tr>
+              <tr><td><code>npm run mac:build</code></td><td>构建当前架构的本地 <code>.app</code></td></tr>
+              <tr><td><code>npm run mac:package-local</code></td><td>生成仅供当前 Mac 测试的未签名 PKG</td></tr>
+              <tr><td><code>npm run mac:verify-package-local</code></td><td>从最终 Payload 独立复验本机 PKG</td></tr>
+              <tr><td><code>npm run mac:package</code></td><td>嵌入 Safari 扩展并生成签名、公证用 PKG</td></tr>
             </tbody>
           </table>
         </section>
@@ -286,8 +334,9 @@ npm run dev</code></pre>
 │   ├── assets/                      # 文档样式与渐进增强脚本
 │   ├── spec/                        # 文档驱动的功能规格
 │   └── index.html                   # 文档站入口
-├── browser-extension/               # 无需构建的自选浏览器助手
-├── scripts/sync-docs.mjs            # 本地文档同步
+├── browser-extension/               # Chrome / Safari 共用 WebExtension 源码
+├── macos/                            # Swift 外壳与本地 Node 代理
+├── scripts/                          # 文档、扩展、Mac App 与 PKG 构建
 ├── tests/                            # 行为和渲染测试
 └── .github/workflows/               # GitHub Pages 发布</code></pre>
           </div>
@@ -305,7 +354,7 @@ npm run dev</code></pre>
             <div class="arch-connector"><span>公开 Feed / 内部配置</span><b>→</b></div>
             <div class="arch-node"><small>UPSTREAM</small><strong>RSS / Atom / RSSHub</strong><span>最多 1 MB</span></div>
           </div>
-          <p>客户端拥有产品状态与来源基线；服务端路由只在预览和刷新时请求来源，不持久化用户订阅。可选浏览器助手使用配对码把本地扩展队列送入客户端确认，网页收藏直接写入本地合集，来源候选仍必须经过预览接口。配置 RSSHub 后，服务端通过 <code>/api/radar/rules/{domain}</code> 读取同源 Radar 规则并请求匹配的 Feed；实例地址和访问密钥不进入浏览器数据。外部频道和内容通过受限 iframe 在主区域加载，来源平台的会话仍由浏览器管理。响应设置 <code>Cache-Control: no-store</code>。</p>
+          <p>客户端拥有产品状态与来源基线；服务端路由只在预览和刷新时请求来源，不持久化用户订阅。可选浏览器助手在安装版中使用短期原生会话、在 Docker / 网页模式中使用手工配对，把本地扩展队列送入客户端确认；网页收藏直接写入本地合集，来源候选仍必须经过预览接口。配置 RSSHub 后，服务端通过 <code>/api/radar/rules/{domain}</code> 读取同源 Radar 规则并请求匹配的 Feed；实例地址和访问密钥不进入浏览器数据。外部频道和内容通过受限 iframe 在主区域加载，来源平台的会话仍由浏览器管理。响应设置 <code>Cache-Control: no-store</code>。</p>
         </section>
 
         <section class="doc-section section-block" id="preview-api" data-doc-section data-keywords="API source preview POST 请求 响应 错误 RSS Bilibili 安全">
